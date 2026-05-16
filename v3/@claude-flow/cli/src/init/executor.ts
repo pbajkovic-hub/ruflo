@@ -5,6 +5,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import { dirname } from 'path';
@@ -458,13 +459,15 @@ export async function executeUpgrade(targetDir: string, upgradeSettings = false)
     try {
       const { generateCostLedger } = await import('./helpers-generator.js');
       const costContent = generateCostLedger();
-      const globalHelpersDir = path.join(require('os').homedir(), '.claude', 'helpers');
+      const globalHelpersDir = path.join(os.homedir(), '.claude', 'helpers');
       if (!fs.existsSync(globalHelpersDir)) fs.mkdirSync(globalHelpersDir, { recursive: true });
       const globalCostPath = path.join(globalHelpersDir, 'cost-ledger.cjs');
       fs.writeFileSync(globalCostPath, costContent, 'utf-8');
       try { fs.chmodSync(globalCostPath, '755'); } catch {}
-      // Also install to project helpers
-      const projectCostPath = path.join(targetDir, '.claude', 'helpers', 'cost-ledger.cjs');
+      // Also install to project helpers (ensure the dir exists — writeFileSync won't create it)
+      const projectHelpersDir = path.join(targetDir, '.claude', 'helpers');
+      if (!fs.existsSync(projectHelpersDir)) fs.mkdirSync(projectHelpersDir, { recursive: true });
+      const projectCostPath = path.join(projectHelpersDir, 'cost-ledger.cjs');
       fs.writeFileSync(projectCostPath, costContent, 'utf-8');
       try { fs.chmodSync(projectCostPath, '755'); } catch {}
       result.created.push('.claude/helpers/cost-ledger.cjs');
