@@ -3,8 +3,20 @@
  * Guidance Control Plane - compile, retrieve, enforce, optimize
  */
 
+import { existsSync } from 'node:fs';
 import type { Command, CommandContext, CommandResult } from '../types.js';
 import { output } from '../output.js';
+
+/** Task intent categories matching @claude-flow/guidance TaskIntent */
+type TaskIntent = 'bug-fix' | 'feature' | 'refactor' | 'security' | 'performance' | 'testing' | 'docs' | 'deployment' | 'architecture' | 'debug' | 'general';
+
+/** Gate evaluation result matching @claude-flow/guidance GateResult */
+interface GateResult {
+  decision: string;
+  gateName: string;
+  reason: string;
+  remediation?: string;
+}
 
 // compile subcommand
 const compileCommand: Command = {
@@ -32,7 +44,6 @@ const compileCommand: Command = {
 
     try {
       const { readFile } = await import('node:fs/promises');
-      const { existsSync } = await import('node:fs');
 
       if (!existsSync(rootPath)) {
         output.writeln(output.error(`Root guidance file not found: ${rootPath}`));
@@ -121,7 +132,6 @@ const retrieveCommand: Command = {
 
     try {
       const { readFile } = await import('node:fs/promises');
-      const { existsSync } = await import('node:fs');
       const { GuidanceCompiler } = await import('@claude-flow/guidance/compiler');
       const { ShardRetriever, HashEmbeddingProvider } = await import('@claude-flow/guidance/retriever');
 
@@ -145,7 +155,7 @@ const retrieveCommand: Command = {
       const result = await retriever.retrieve({
         taskDescription: task,
         maxShards,
-        intent: intentOverride as any,
+        intent: intentOverride as TaskIntent | undefined,
       });
 
       if (jsonOutput) {
@@ -212,7 +222,7 @@ const gatesCommand: Command = {
       const { EnforcementGates } = await import('@claude-flow/guidance/gates');
       const gates = new EnforcementGates();
 
-      const results: Array<{ type: string; result: any }> = [];
+      const results: Array<{ type: string; result: GateResult[] | GateResult | null }> = [];
 
       if (command) {
         const gateResults = gates.evaluateCommand(command);
@@ -291,7 +301,6 @@ const statusCommand: Command = {
     output.writeln(output.dim('─'.repeat(50)));
 
     try {
-      const { existsSync } = await import('node:fs');
 
       const rootExists = existsSync('./CLAUDE.md');
       const localExists = existsSync('./CLAUDE.local.md');
@@ -368,7 +377,6 @@ const optimizeCommand: Command = {
 
     try {
       const { readFile, writeFile } = await import('node:fs/promises');
-      const { existsSync } = await import('node:fs');
 
       if (!existsSync(rootPath)) {
         output.writeln(output.error(`Root guidance file not found: ${rootPath}`));
@@ -483,7 +491,6 @@ const abTestCommand: Command = {
 
     try {
       const { readFile } = await import('node:fs/promises');
-      const { existsSync } = await import('node:fs');
       const { abBenchmark, getDefaultABTasks } = await import('@claude-flow/guidance/analyzer');
 
       // Load Config B (candidate) content

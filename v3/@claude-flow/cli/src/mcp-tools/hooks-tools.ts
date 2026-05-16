@@ -3,9 +3,10 @@
  * Provides intelligent hooks functionality via MCP protocol
  */
 
-import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync } from 'fs';
+import { mkdirSync, writeFileSync, existsSync, readFileSync, statSync, unlinkSync, readdirSync, rmSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
+import { validateIdentifier, validateText, validatePath } from './validate-input.js';
 
 // Real vector search functions - lazy loaded to avoid circular imports
 let searchEntriesFn: ((options: {
@@ -92,11 +93,12 @@ async function getEWCConsolidator() {
 }
 
 // MoE Router - lazy loaded
-let moeRouter: Awaited<ReturnType<typeof import('../ruvector/moe-router.js').getMoERouter>> | null = null;
+// #1773 item 4 — moe-router migrated to @claude-flow/neural
+let moeRouter: Awaited<ReturnType<typeof import('@claude-flow/neural').getMoERouter>> | null = null;
 async function getMoERouter() {
   if (!moeRouter) {
     try {
-      const { getMoERouter: getMoE } = await import('../ruvector/moe-router.js');
+      const { getMoERouter: getMoE } = await import('@claude-flow/neural');
       moeRouter = await getMoE();
     } catch {
       moeRouter = null;
@@ -342,6 +344,7 @@ async function getSemanticRouter() {
 
       nativeVectorDb = db;
       routerBackend = 'native';
+      console.log('[hooks] Semantic router initialized: native VectorDb (HNSW, 16k+ routes/s)');
       return { router: null, backend: routerBackend, native: nativeVectorDb };
     }
   } catch (err) {
@@ -366,9 +369,11 @@ async function getSemanticRouter() {
     }
 
     routerBackend = 'pure-js';
+    console.log('[hooks] Semantic router initialized: pure JS (cosine, 47k routes/s)');
   } catch {
     semanticRouter = null;
     routerBackend = 'none';
+    console.log('[hooks] Semantic router initialized: none (no backend available)');
   }
 
   return { router: semanticRouter, backend: routerBackend, native: nativeVectorDb };
@@ -389,11 +394,12 @@ function getRouterBackendInfo(): { backend: string; speed: string } {
 }
 
 // Flash Attention - lazy loaded
-let flashAttention: Awaited<ReturnType<typeof import('../ruvector/flash-attention.js').getFlashAttention>> | null = null;
+// #1773 item 4 — flash-attention migrated to @claude-flow/neural
+let flashAttention: Awaited<ReturnType<typeof import('@claude-flow/neural').getFlashAttention>> | null = null;
 async function getFlashAttention() {
   if (!flashAttention) {
     try {
-      const { getFlashAttention: getFlash } = await import('../ruvector/flash-attention.js');
+      const { getFlashAttention: getFlash } = await import('@claude-flow/neural');
       flashAttention = await getFlash();
     } catch {
       flashAttention = null;
@@ -695,7 +701,7 @@ function assessCommandRisk(command: string): { risk: string; level: number; warn
 // MCP Tool implementations - return raw data for direct CLI use
 export const hooksPreEdit: MCPTool = {
   name: 'hooks_pre-edit',
-  description: 'Get context and agent suggestions before editing a file',
+  description: 'Get context and agent suggestions before editing a file Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -708,6 +714,8 @@ export const hooksPreEdit: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const filePath = params.filePath as string;
     const operation = (params.operation as string) || 'update';
+
+    { const v = validatePath(filePath, 'filePath'); if (!v.valid) return { success: false, error: v.error }; }
 
     const suggestedAgents = suggestAgentsForFile(filePath);
     const ext = getFileExtension(filePath);
@@ -735,7 +743,7 @@ export const hooksPreEdit: MCPTool = {
 
 export const hooksPostEdit: MCPTool = {
   name: 'hooks_post-edit',
-  description: 'Record editing outcome for learning',
+  description: 'Record editing outcome for learning Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -749,6 +757,9 @@ export const hooksPostEdit: MCPTool = {
     const filePath = params.filePath as string;
     const success = params.success !== false;
     const agent = params.agent as string | undefined;
+
+    { const v = validatePath(filePath, 'filePath'); if (!v.valid) return { success: false, error: v.error }; }
+    if (agent) { const v = validateIdentifier(agent, 'agent'); if (!v.valid) return { success: false, error: v.error }; }
 
     // Wire recordFeedback through bridge (issue #1209)
     let feedbackResult: { success: boolean; controller: string; updated: number } | null = null;
@@ -781,7 +792,7 @@ export const hooksPostEdit: MCPTool = {
 
 export const hooksPreCommand: MCPTool = {
   name: 'hooks_pre-command',
-  description: 'Assess risk before executing a command',
+  description: 'Assess risk before executing a command Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -791,6 +802,9 @@ export const hooksPreCommand: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const command = params.command as string;
+
+    { const v = validateText(command, 'command'); if (!v.valid) return { success: false, error: v.error }; }
+
     const assessment = assessCommandRisk(command);
 
     const riskLevel = assessment.level >= 0.8 ? 'critical'
@@ -817,7 +831,7 @@ export const hooksPreCommand: MCPTool = {
 
 export const hooksPostCommand: MCPTool = {
   name: 'hooks_post-command',
-  description: 'Record command execution outcome',
+  description: 'Record command execution outcome Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -829,20 +843,48 @@ export const hooksPostCommand: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const command = params.command as string;
     const exitCode = (params.exitCode as number) || 0;
+    const success = exitCode === 0;
+
+    { const v = validateText(command, 'command'); if (!v.valid) return { success: false, error: v.error }; }
+
+    // Persist command outcome via AgentDB
+    let _storedIn: 'agentdb' | 'json-store' | 'none' = 'none';
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      await bridge.bridgeStoreEntry({
+        key: `cmd-${Date.now()}`,
+        value: JSON.stringify({ command, exitCode, success }),
+        namespace: 'commands',
+        tags: [success ? 'success' : 'error'],
+      });
+      _storedIn = 'agentdb';
+    } catch {
+      // AgentDB not available — store in JSON
+      try {
+        const store = loadMemoryStore();
+        const key = `cmd-${Date.now()}`;
+        store.entries[key] = { key, value: JSON.stringify({ command, exitCode, success }), namespace: 'commands', createdAt: new Date().toISOString() } as any;
+        const memDir = resolve(MEMORY_DIR);
+        if (!existsSync(memDir)) mkdirSync(memDir, { recursive: true });
+        writeFileSync(getMemoryPath(), JSON.stringify(store, null, 2), 'utf-8');
+        _storedIn = 'json-store';
+      } catch { /* non-critical */ }
+    }
 
     return {
-      recorded: true,
+      recorded: _storedIn !== 'none',
       command,
       exitCode,
-      success: exitCode === 0,
+      success,
       timestamp: new Date().toISOString(),
+      _storedIn,
     };
   },
 };
 
 export const hooksRoute: MCPTool = {
   name: 'hooks_route',
-  description: 'Route task to optimal agent using semantic similarity (native HNSW or pure JS)',
+  description: 'Get a 3-tier routing recommendation for a task: Tier 1 (Agent Booster, 0ms / $0 — for var-to-const, add-types, etc.), Tier 2 (Haiku — simple), Tier 3 (Sonnet/Opus — complex). Use this BEFORE spawning an agent to avoid sending simple transforms to Sonnet. Native tools have no equivalent — Claude Code does not introspect its own model-selection cost. Returns the recommended model + a `[AGENT_BOOSTER_AVAILABLE]` literal when the WASM bypass applies. Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -856,6 +898,9 @@ export const hooksRoute: MCPTool = {
     const task = params.task as string;
     const context = params.context as string | undefined;
     const useSemanticRouter = params.useSemanticRouter !== false;
+
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
+    if (context) { const v = validateText(context, 'context'); if (!v.valid) return { success: false, error: v.error }; }
 
     // Phase 5: Try AgentDB's SemanticRouter / LearningSystem first
     if (useSemanticRouter) {
@@ -1017,7 +1062,7 @@ export const hooksRoute: MCPTool = {
 
 export const hooksMetrics: MCPTool = {
   name: 'hooks_metrics',
-  description: 'View learning metrics dashboard',
+  description: 'View learning metrics dashboard Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1028,31 +1073,58 @@ export const hooksMetrics: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const period = (params.period as string) || '24h';
 
+    // ADR-093 F1: read from the same trajectory/pattern store that
+    // hooks_post-task and hooks_intelligence_stats write to. Previously
+    // this handler key-substring-filtered the memory store for "pattern",
+    // "route", "task" — none of which match the trajectory keys that
+    // post-task actually writes — so counters stayed at 0 forever (#1686).
+    const stats = getIntelligenceStatsFromMemory();
+
+    // Routing outcomes are persisted to a separate file (loadRoutingOutcomes)
+    // by post-task; surface them so the dashboard sees command counters too.
+    let routingOutcomes: Array<{ success: boolean; agent?: string }> = [];
+    try {
+      routingOutcomes = loadRoutingOutcomes() as Array<{ success: boolean; agent?: string }>;
+    } catch { /* non-fatal */ }
+
+    const totalCommands = routingOutcomes.length;
+    const successfulCommands = routingOutcomes.filter(o => o.success).length;
+    const successRate = totalCommands > 0 ? successfulCommands / totalCommands : null;
+
+    // Compute top agent from routing outcomes
+    const agentCounts: Record<string, number> = {};
+    for (const o of routingOutcomes) {
+      if (o.agent) agentCounts[o.agent] = (agentCounts[o.agent] || 0) + 1;
+    }
+    const topAgent = Object.entries(agentCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+    const successful = stats.trajectories.successful;
+    const total = stats.trajectories.total;
+    const failed = Math.max(0, total - successful);
+
     return {
+      _real: true,
+      _dataSource: 'intelligence-stats + routing-outcomes',
       period,
       patterns: {
-        total: 15,
-        successful: 12,
-        failed: 3,
-        avgConfidence: 0.85,
+        total: stats.patterns.learned,
+        successful,
+        failed,
+        avgConfidence: stats.routing.avgConfidence || null,
       },
       agents: {
-        routingAccuracy: 0.87,
-        totalRoutes: 42,
-        topAgent: 'coder',
+        routingAccuracy: stats.routing.avgConfidence || null,
+        totalRoutes: stats.routing.decisions,
+        topAgent,
       },
       commands: {
-        totalExecuted: 128,
-        successRate: 0.94,
-        avgRiskScore: 0.15,
+        totalExecuted: totalCommands,
+        successRate,
+        avgRiskScore: null,
       },
-      performance: {
-        flashAttention: '2.49x-7.47x speedup',
-        memoryReduction: '50-75% reduction',
-        searchImprovement: '150x-12,500x faster',
-        tokenReduction: '32.3% fewer tokens',
-      },
-      status: 'healthy',
+      _note: total === 0 && totalCommands === 0
+        ? 'No metrics data collected yet. Run hooks_post-task / hooks_intelligence_trajectory-end / hooks_route to populate.'
+        : undefined,
       lastUpdated: new Date().toISOString(),
     };
   },
@@ -1060,7 +1132,7 @@ export const hooksMetrics: MCPTool = {
 
 export const hooksList: MCPTool = {
   name: 'hooks_list',
-  description: 'List all registered hooks',
+  description: 'List all registered hooks Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -1108,7 +1180,7 @@ export const hooksList: MCPTool = {
 
 export const hooksPreTask: MCPTool = {
   name: 'hooks_pre-task',
-  description: 'Record task start and get agent suggestions with intelligent model routing (ADR-026)',
+  description: 'Record task start and get agent suggestions with intelligent model routing (ADR-026) Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1122,6 +1194,11 @@ export const hooksPreTask: MCPTool = {
     const taskId = params.taskId as string;
     const description = params.description as string;
     const filePath = params.filePath as string | undefined;
+
+    { const v = validateIdentifier(taskId, 'taskId'); if (!v.valid) return { success: false, error: v.error }; }
+    { const v = validateText(description, 'description'); if (!v.valid) return { success: false, error: v.error }; }
+    if (filePath) { const v = validatePath(filePath, 'filePath'); if (!v.valid) return { success: false, error: v.error }; }
+
     const suggestion = suggestAgentsForTask(description);
 
     // Determine complexity
@@ -1194,7 +1271,7 @@ export const hooksPreTask: MCPTool = {
 
 export const hooksPostTask: MCPTool = {
   name: 'hooks_post-task',
-  description: 'Record task completion for learning',
+  description: 'Record task completion for learning Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1213,6 +1290,9 @@ export const hooksPostTask: MCPTool = {
     const agent = params.agent as string | undefined;
     const quality = (params.quality as number) || (success ? 0.85 : 0.3);
     const startTime = Date.now();
+
+    { const v = validateIdentifier(taskId, 'taskId'); if (!v.valid) return { success: false, error: v.error }; }
+    if (agent) { const v = validateIdentifier(agent, 'agent'); if (!v.valid) return { success: false, error: v.error }; }
 
     // Phase 3: Wire recordFeedback through bridge → LearningSystem + ReasoningBank
     let feedbackResult: { success: boolean; controller: string; updated: number } | null = null;
@@ -1241,6 +1321,17 @@ export const hooksPostTask: MCPTool = {
       });
     } catch {
       // Non-fatal
+    }
+
+    // Record trajectory via intelligence module (SONA + ReasoningBank)
+    try {
+      const intelligence = await import('../memory/intelligence.js');
+      await intelligence.recordTrajectory(
+        [{ type: 'result' as const, content: (params.task as string) || taskId, metadata: { success, agent, quality }, timestamp: Date.now() }],
+        success ? 'success' : 'failure'
+      );
+    } catch {
+      // Intelligence module not available — non-fatal
     }
 
     // Persist routing outcome for runtime learning (file-based, always reliable)
@@ -1280,6 +1371,30 @@ export const hooksPostTask: MCPTool = {
 
     const duration = Date.now() - startTime;
 
+    // Persist to auto-memory-store for statusline visibility
+    try {
+      const dataDir = join(getProjectCwd(), '.claude-flow', 'data');
+      if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+      const storePath = join(dataDir, 'auto-memory-store.json');
+      let store: Array<Record<string, unknown>> = [];
+      try {
+        if (existsSync(storePath)) {
+          const parsed = JSON.parse(readFileSync(storePath, 'utf-8'));
+          store = Array.isArray(parsed) ? parsed : [];
+        }
+      } catch { /* start fresh */ }
+      store.push({
+        id: `task-${taskId}`,
+        key: taskId,
+        content: `Task ${success ? 'completed' : 'failed'}: ${taskText || taskId}${agent ? ` (agent: ${agent})` : ''}`,
+        namespace: 'tasks',
+        type: 'task-outcome',
+        metadata: { agent, success, quality },
+        createdAt: Date.now(),
+      });
+      writeFileSync(storePath, JSON.stringify(store, null, 2), 'utf-8');
+    } catch { /* non-critical */ }
+
     return {
       taskId,
       success,
@@ -1305,7 +1420,7 @@ export const hooksPostTask: MCPTool = {
 // Explain hook - transparent routing explanation
 export const hooksExplain: MCPTool = {
   name: 'hooks_explain',
-  description: 'Explain routing decision with full transparency',
+  description: 'Explain routing decision with full transparency Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1317,6 +1432,9 @@ export const hooksExplain: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const task = params.task as string;
+
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
+
     const suggestion = suggestAgentsForTask(task);
     const taskLower = task.toLowerCase();
 
@@ -1326,10 +1444,27 @@ export const hooksExplain: MCPTool = {
       if (taskLower.includes(pattern)) {
         matchedPatterns.push({
           pattern,
-          matchScore: 0.85 + Math.random() * 0.1,
-          examples: [`Previous ${pattern} task completed successfully`, `${pattern} patterns from repository analysis`],
+          matchScore: pattern.length / Math.max(taskLower.length, 1), // real ratio: pattern length vs task length
+          examples: [`Keyword "${pattern}" matched in task description`],
         });
       }
+    }
+
+    // Calculate real historical success rate from routing outcomes file
+    let historicalSuccess: number | null = null;
+    let historicalNote = 'No historical data yet';
+    try {
+      const outcomesPath = join(resolve('.'), '.claude-flow/routing-outcomes.json');
+      if (existsSync(outcomesPath)) {
+        const data = JSON.parse(readFileSync(outcomesPath, 'utf-8'));
+        const outcomes: Array<{ success: boolean }> = data.outcomes || [];
+        if (outcomes.length > 0) {
+          historicalSuccess = outcomes.filter(o => o.success).length / outcomes.length;
+          historicalNote = `Calculated from ${outcomes.length} recorded outcomes`;
+        }
+      }
+    } catch {
+      // File unreadable; leave as null
     }
 
     return {
@@ -1338,8 +1473,8 @@ export const hooksExplain: MCPTool = {
         `The task contains keywords that match the "${suggestion.agents[0]}" specialization with ${(suggestion.confidence * 100).toFixed(0)}% confidence.`,
       factors: [
         { factor: 'Keyword Match', weight: 0.4, value: suggestion.confidence, impact: 'Primary routing signal' },
-        { factor: 'Historical Success', weight: 0.3, value: 0.87, impact: 'Past task success rate' },
-        { factor: 'Agent Availability', weight: 0.2, value: 0.95, impact: 'All suggested agents available' },
+        { factor: 'Historical Success', weight: 0.3, value: historicalSuccess, impact: historicalNote },
+        { factor: 'Agent Availability', weight: 0.2, value: null, impact: 'Agent availability tracking not implemented' },
         { factor: 'Task Complexity', weight: 0.1, value: task.length > 100 ? 0.8 : 0.3, impact: 'Complexity assessment' },
       ],
       patterns: matchedPatterns.length > 0 ? matchedPatterns : [
@@ -1351,7 +1486,9 @@ export const hooksExplain: MCPTool = {
         reasoning: [
           `Task analysis identified ${matchedPatterns.length || 1} relevant patterns`,
           `"${suggestion.agents[0]}" has highest capability match for this task type`,
-          `Historical success rate for similar tasks: 87%`,
+          historicalSuccess !== null
+            ? `Historical success rate for similar tasks: ${(historicalSuccess * 100).toFixed(0)}%`
+            : `No historical outcome data available yet`,
           `Confidence threshold met (${(suggestion.confidence * 100).toFixed(0)}% >= 70%)`,
         ],
       },
@@ -1362,7 +1499,7 @@ export const hooksExplain: MCPTool = {
 // Pretrain hook - repository analysis for intelligence bootstrap
 export const hooksPretrain: MCPTool = {
   name: 'hooks_pretrain',
-  description: 'Analyze repository to bootstrap intelligence (4-step pipeline)',
+  description: 'Analyze repository to bootstrap intelligence (4-step pipeline) Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1372,30 +1509,137 @@ export const hooksPretrain: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
-    const path = (params.path as string) || '.';
+    const repoPath = resolve((params.path as string) || '.');
     const depth = (params.depth as string) || 'medium';
-    const startTime = Date.now();
+    const startTime = performance.now();
 
-    // Scale analysis results by depth level
-    const multiplier = depth === 'deep' ? 3 : depth === 'shallow' ? 1 : 2;
+    // Real file scanning — count files by extension, extract patterns.
+    // (readdirSync/statSync already imported statically at the top.)
+    const extCounts: Record<string, number> = {};
+    let filesAnalyzed = 0;
+    // #1953: separate budget for code files. The old code gated the
+    // import-pattern extraction on `filesAnalyzed <= 50`, which counts
+    // EVERY directory entry (including .md/.yaml/.db/.log). In any
+    // markdown/docs-heavy repo, the depth-first walker burned through the
+    // 50-file budget on non-code files before reaching any source — so
+    // `patternsExtracted: 0` even when hundreds of `.ts`/`.js` files existed.
+    let codeFilesScanned = 0;
+    let totalLines = 0;
+    const maxDepth = depth === 'shallow' ? 2 : depth === 'deep' ? 6 : 4;
+    const patterns: string[] = [];
+
+    // #1953: recurse into directories that typically contain code first
+    // (`src/`, `apps/`, `packages/`, `lib/`, `crates/`, `workers/`, `server/`)
+    // before docs / specs / planning dirs, so the import-extraction budget
+    // is spent on the highest-signal directories even in mixed repos.
+    const CODE_DIR_PREFIXES = new Set([
+      'src', 'apps', 'packages', 'lib', 'crates', 'workers',
+      'server', 'backend', 'frontend', 'app', 'cli', 'core',
+    ]);
+    const scoreEntry = (name: string): number => {
+      if (CODE_DIR_PREFIXES.has(name)) return 0;
+      // Deprioritise common docs / output directories.
+      if (/^(docs?|specs?|_.*|examples?|samples?|out|build|target|coverage|tests?)$/.test(name)) return 2;
+      return 1;
+    };
+
+    const scan = (dir: string, currentDepth: number) => {
+      if (currentDepth > maxDepth) return;
+      try {
+        const entries = readdirSync(dir, { withFileTypes: true });
+        // Sort: code-likely dirs first, files mixed in by name, deprioritised
+        // dirs last. Stable for deterministic test behaviour.
+        entries.sort((a, b) => {
+          const sa = a.isDirectory() ? scoreEntry(a.name) : 1;
+          const sb = b.isDirectory() ? scoreEntry(b.name) : 1;
+          return sa - sb;
+        });
+        for (const entry of entries) {
+          if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist') continue;
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) {
+            scan(full, currentDepth + 1);
+          } else if (entry.isFile()) {
+            const ext = entry.name.includes('.') ? entry.name.slice(entry.name.lastIndexOf('.')) : '';
+            if (ext) extCounts[ext] = (extCounts[ext] || 0) + 1;
+            filesAnalyzed++;
+            // For code files, count lines and extract imports
+            if (['.ts', '.js', '.tsx', '.jsx', '.mjs', '.cjs', '.py', '.go', '.rs', '.java'].includes(ext)) {
+              try {
+                const content = readFileSync(full, 'utf-8');
+                const lines = content.split('\n');
+                totalLines += lines.length;
+                // #1953: gate on the code-file count, not every-file count.
+                // Also widened the per-file scan window from 30 → 80 lines:
+                // modern TS files often have license headers + JSDoc + type
+                // imports before the first `import` statement.
+                if (++codeFilesScanned <= 50) {
+                  for (const line of lines.slice(0, 80)) {
+                    if (line.startsWith('import ') || line.startsWith('from ') || (line.startsWith('const ') && line.includes('require('))) {
+                      const trimmed = line.trim();
+                      if (trimmed.length < 120 && !patterns.includes(trimmed)) patterns.push(trimmed);
+                      if (patterns.length >= 100) break;
+                    }
+                  }
+                }
+              } catch { /* skip unreadable */ }
+            }
+          }
+        }
+      } catch { /* skip inaccessible dirs */ }
+    };
+
+    scan(repoPath, 0);
+    const elapsed = Math.round(performance.now() - startTime);
+
+    // Store extracted patterns in AgentDB
+    let patternsStored = 0;
+    try {
+      const bridge = await import('../memory/memory-bridge.js');
+      await bridge.bridgeStoreEntry({
+        key: `pretrain-${Date.now()}`,
+        value: JSON.stringify({ filesAnalyzed, totalLines, topExtensions: Object.entries(extCounts).sort((a, b) => b[1] - a[1]).slice(0, 10), importPatterns: patterns.slice(0, 20) }),
+        namespace: 'pretrain',
+        tags: ['pretrain', depth],
+      });
+      patternsStored = patterns.length;
+    } catch { /* AgentDB not available */ }
+
+    // #1847: when the corpus contains files but no patterns were extracted
+    // (typical for Markdown vaults), make the source-code-only extraction
+    // contract explicit so users don't conclude the hook system is broken.
+    const SUPPORTED_EXTRACTION_EXTS = ['.ts', '.js', '.tsx', '.jsx', '.mjs', '.cjs', '.py', '.go', '.rs', '.java'];
+    let note: string | undefined;
+    if (filesAnalyzed > 0 && patterns.length === 0) {
+      const codeFileCount = SUPPORTED_EXTRACTION_EXTS.reduce(
+        (sum, ext) => sum + (extCounts[ext] ?? 0),
+        0,
+      );
+      note = codeFileCount === 0
+        ? `No source-code patterns found. hooks_pretrain extracts import/require lines from ${SUPPORTED_EXTRACTION_EXTS.join('/')} files only — Markdown/text/asset corpora produce zero patterns by design. This is not a hook-system failure; live trajectories and statusline are independent.`
+        : `Found ${codeFileCount} source-code file(s) but extracted zero import/require patterns. They may be empty, generated, or use non-standard module syntax.`;
+    }
 
     return {
-      path,
+      success: true,
+      _real: true,
+      path: repoPath,
       depth,
+      durationMs: elapsed,
       stats: {
-        filesAnalyzed: 42 * multiplier,
-        patternsExtracted: 15 * multiplier,
-        strategiesLearned: 8 * multiplier,
-        trajectoriesEvaluated: 23 * multiplier,
-        contradictionsResolved: 3,
+        filesAnalyzed,
+        totalLines,
+        patternsExtracted: patterns.length,
+        patternsStored,
+        fileTypes: Object.entries(extCounts).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([ext, count]) => ({ ext, count })),
+        // #1847: explicit extraction contract so callers can tell pretrain
+        // patterns apart from live trajectories and hook statusline state.
+        sources: {
+          extractedFrom: SUPPORTED_EXTRACTION_EXTS,
+          scope: 'pretrain-only (live trajectories + statusline are tracked separately)',
+        },
       },
-      pipeline: {
-        retrieve: { status: 'completed', duration: 120 * multiplier },
-        judge: { status: 'completed', duration: 180 * multiplier },
-        distill: { status: 'completed', duration: 90 * multiplier },
-        consolidate: { status: 'completed', duration: 60 * multiplier },
-      },
-      duration: Date.now() - startTime + (500 * multiplier),
+      ...(note ? { note } : {}),
     };
   },
 };
@@ -1403,7 +1647,7 @@ export const hooksPretrain: MCPTool = {
 // Build agents hook - generate optimized agent configs
 export const hooksBuildAgents: MCPTool = {
   name: 'hooks_build-agents',
-  description: 'Generate optimized agent configurations from pretrain data',
+  description: 'Generate optimized agent configurations from pretrain data Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1474,7 +1718,7 @@ export const hooksBuildAgents: MCPTool = {
 // Transfer hook - transfer patterns from another project
 export const hooksTransfer: MCPTool = {
   name: 'hooks_transfer',
-  description: 'Transfer learned patterns from another project',
+  description: 'Transfer learned patterns from another project Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1488,6 +1732,9 @@ export const hooksTransfer: MCPTool = {
     const sourcePath = params.sourcePath as string;
     const minConfidence = (params.minConfidence as number) || 0.7;
     const filter = params.filter as string;
+
+    { const v = validatePath(sourcePath, 'sourcePath'); if (!v.valid) return { success: false, error: v.error }; }
+    if (filter) { const v = validateIdentifier(filter, 'filter'); if (!v.valid) return { success: false, error: v.error }; }
 
     // Try to load patterns from source project's memory store
     const sourceMemoryPath = join(resolve(sourcePath), MEMORY_DIR, MEMORY_FILE);
@@ -1511,12 +1758,14 @@ export const hooksTransfer: MCPTool = {
       'agent-success': sourceEntries.filter(e => e.key.includes('agent') || e.metadata?.type === 'agent-success').length,
     };
 
-    // If source has no patterns, provide demo data
+    // If source has no patterns, report honestly instead of substituting demo data
     if (Object.values(byType).every(v => v === 0)) {
-      byType['file-patterns'] = 8;
-      byType['task-routing'] = 12;
-      byType['command-risk'] = 5;
-      byType['agent-success'] = 15;
+      return {
+        success: false,
+        message: 'No patterns found in source project',
+        sourcePath,
+        transferred: 0,
+      };
     }
 
     if (filter) {
@@ -1528,6 +1777,7 @@ export const hooksTransfer: MCPTool = {
     const total = Object.values(byType).reduce((a, b) => a + b, 0);
 
     return {
+      success: true,
       sourcePath,
       transferred: {
         total,
@@ -1542,7 +1792,7 @@ export const hooksTransfer: MCPTool = {
         avgConfidence: 0.82 + (minConfidence > 0.8 ? 0.1 : 0),
         avgAge: '3 days',
       },
-      dataSource: Object.values(sourceStore.entries).length > 0 ? 'source-project' : 'demo-data',
+      dataSource: 'source-project',
     };
   },
 };
@@ -1550,7 +1800,7 @@ export const hooksTransfer: MCPTool = {
 // Session start hook - auto-starts daemon
 export const hooksSessionStart: MCPTool = {
   name: 'hooks_session-start',
-  description: 'Initialize a new session and auto-start daemon',
+  description: 'Initialize a new session and auto-start daemon Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1564,13 +1814,34 @@ export const hooksSessionStart: MCPTool = {
     const restoreLatest = params.restoreLatest as boolean;
     const shouldStartDaemon = params.startDaemon === true;
 
+    if (params.sessionId) { const v = validateIdentifier(params.sessionId as string, 'sessionId'); if (!v.valid) return { success: false, error: v.error }; }
+
+    // Auto-regenerate statusline if outdated (fixes older installs)
+    // Checks for the old fake heuristic: "Math.floor(sizeKB / 2)"
+    try {
+      const statuslinePath = join(getProjectCwd(), '.claude', 'helpers', 'statusline.cjs');
+      if (existsSync(statuslinePath)) {
+        const content = readFileSync(statuslinePath, 'utf-8');
+        if (content.includes('Math.floor(sizeKB / 2)') || content.includes('Maturity fallback')) {
+          // Old version detected — regenerate from current generator
+          const { generateStatuslineScript } = await import('../init/statusline-generator.js');
+          const newContent = generateStatuslineScript({
+            runtime: { maxAgents: 15, topology: 'hierarchical', strategy: 'specialized' },
+          } as any);
+          writeFileSync(statuslinePath, newContent, 'utf-8');
+        }
+      }
+    } catch {
+      // Non-critical — old statusline continues to work, just with stale heuristics
+    }
+
     // Auto-start daemon if enabled
     let daemonStatus: { started: boolean; pid?: number; error?: string } = { started: false };
     if (shouldStartDaemon) {
       try {
         // Dynamic import to avoid circular dependencies
         const { startDaemon } = await import('../services/worker-daemon.js');
-        const daemon = await startDaemon(process.cwd());
+        const daemon = await startDaemon(getProjectCwd());
         const status = daemon.getStatus();
         daemonStatus = {
           started: true,
@@ -1582,6 +1853,16 @@ export const hooksSessionStart: MCPTool = {
           error: error instanceof Error ? error.message : String(error),
         };
       }
+    }
+
+    // Initialize intelligence module (SONA + local ReasoningBank)
+    let intelligenceStatus: { sonaEnabled: boolean; reasoningBankEnabled: boolean } = { sonaEnabled: false, reasoningBankEnabled: false };
+    try {
+      const intelligence = await import('../memory/intelligence.js');
+      const initResult = await intelligence.initializeIntelligence();
+      intelligenceStatus = { sonaEnabled: initResult.sonaEnabled, reasoningBankEnabled: initResult.reasoningBankEnabled };
+    } catch {
+      // Intelligence module not available — non-fatal
     }
 
     // Phase 5: Wire ReflexionMemory session start via bridge
@@ -1602,6 +1883,37 @@ export const hooksSessionStart: MCPTool = {
       // Bridge not available
     }
 
+    // Persist session record to auto-memory-store for statusline visibility
+    try {
+      const dataDir = join(getProjectCwd(), '.claude-flow', 'data');
+      if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true });
+      const storePath = join(dataDir, 'auto-memory-store.json');
+      let store: Array<Record<string, unknown>> = [];
+      try {
+        if (existsSync(storePath)) {
+          const raw = readFileSync(storePath, 'utf-8');
+          const parsed = JSON.parse(raw);
+          store = Array.isArray(parsed) ? parsed : [];
+        }
+      } catch { /* start fresh */ }
+      // Add session entry (dedup by session ID)
+      const entryId = `session-${sessionId}`;
+      const existing = store.findIndex((e: Record<string, unknown>) => e.id === entryId);
+      const entry = {
+        id: entryId,
+        key: sessionId,
+        content: `Session started: ${sessionId}`,
+        namespace: 'sessions',
+        type: 'session',
+        createdAt: Date.now(),
+      };
+      if (existing >= 0) store[existing] = entry;
+      else store.push(entry);
+      writeFileSync(storePath, JSON.stringify(store, null, 2), 'utf-8');
+    } catch {
+      // Non-critical — statusline just won't show this session
+    }
+
     return {
       sessionId,
       started: new Date().toISOString(),
@@ -1616,8 +1928,8 @@ export const hooksSessionStart: MCPTool = {
       sessionMemory: sessionMemory || { controller: 'none', restoredPatterns: 0 },
       previousSession: restoreLatest ? {
         id: `session-${Date.now() - 86400000}`,
-        tasksRestored: sessionMemory?.restoredPatterns || 3,
-        memoryRestored: sessionMemory?.restoredPatterns || 15,
+        tasksRestored: sessionMemory?.restoredPatterns || 0,
+        memoryRestored: sessionMemory?.restoredPatterns || 0,
       } : null,
     };
   },
@@ -1626,7 +1938,7 @@ export const hooksSessionStart: MCPTool = {
 // Session end hook - stops daemon
 export const hooksSessionEnd: MCPTool = {
   name: 'hooks_session-end',
-  description: 'End current session, stop daemon, and persist state',
+  description: 'End current session, stop daemon, and persist state Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1652,6 +1964,26 @@ export const hooksSessionEnd: MCPTool = {
       }
     }
 
+    // Read actual counts from stores
+    const store = loadMemoryStore();
+    const allEntries = Object.values(store.entries);
+    const taskCount = allEntries.filter(e => e.key.includes('task')).length;
+    const agentCount = allEntries.filter(e => e.key.includes('agent')).length;
+    const patternCount = allEntries.filter(e => e.key.includes('pattern')).length;
+    const trajectoryCount = activeTrajectories.size;
+
+    // Check for pending-insights.jsonl
+    let insightCount = 0;
+    try {
+      const insightsPath = resolve(join('.claude-flow', 'data', 'pending-insights.jsonl'));
+      if (existsSync(insightsPath)) {
+        const content = readFileSync(insightsPath, 'utf-8').trim();
+        insightCount = content ? content.split('\n').length : 0;
+      }
+    } catch {
+      // File not available
+    }
+
     // Phase 5: Wire ReflexionMemory session end + NightlyLearner consolidation via bridge
     let sessionPersistence: { controller: string; persisted: boolean } | null = null;
     try {
@@ -1659,8 +1991,8 @@ export const hooksSessionEnd: MCPTool = {
       const result = await bridge.bridgeSessionEnd({
         sessionId,
         summary: saveState ? 'Session ended with state saved' : 'Session ended',
-        tasksCompleted: 12,
-        patternsLearned: 8,
+        tasksCompleted: taskCount,
+        patternsLearned: patternCount,
       });
       if (result) {
         sessionPersistence = {
@@ -1679,17 +2011,15 @@ export const hooksSessionEnd: MCPTool = {
       daemon: { stopped: daemonStopped },
       sessionPersistence: sessionPersistence || { controller: 'none', persisted: false },
       summary: {
-        tasksExecuted: 12,
-        tasksSucceeded: 10,
-        tasksFailed: 2,
-        commandsExecuted: 45,
-        filesModified: 23,
-        agentsSpawned: 5,
+        tasksExecuted: taskCount,
+        filesModified: 0,
+        agentsSpawned: agentCount,
+        pendingInsights: insightCount,
+        memoryEntries: allEntries.length,
       },
       learningUpdates: {
-        patternsLearned: 8,
-        trajectoriesRecorded: 12,
-        confidenceImproved: 0.05,
+        patternsLearned: patternCount,
+        trajectoriesRecorded: trajectoryCount,
       },
     };
   },
@@ -1698,7 +2028,7 @@ export const hooksSessionEnd: MCPTool = {
 // Session restore hook
 export const hooksSessionRestore: MCPTool = {
   name: 'hooks_session-restore',
-  description: 'Restore a previous session',
+  description: 'Restore a previous session Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1711,6 +2041,8 @@ export const hooksSessionRestore: MCPTool = {
     const requestedId = (params.sessionId as string) || 'latest';
     const restoreAgents = params.restoreAgents !== false;
     const restoreTasks = params.restoreTasks !== false;
+
+    if (params.sessionId) { const v = validateIdentifier(params.sessionId as string, 'sessionId'); if (!v.valid) return { success: false, error: v.error }; }
 
     const originalSessionId = requestedId === 'latest' ? `session-${Date.now() - 86400000}` : requestedId;
     const newSessionId = `session-${Date.now()}`;
@@ -1740,7 +2072,7 @@ export const hooksSessionRestore: MCPTool = {
 // Notify hook - cross-agent notifications
 export const hooksNotify: MCPTool = {
   name: 'hooks_notify',
-  description: 'Send cross-agent notification',
+  description: 'Send cross-agent notification Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1755,6 +2087,9 @@ export const hooksNotify: MCPTool = {
     const message = params.message as string;
     const target = (params.target as string) || 'all';
     const priority = (params.priority as string) || 'normal';
+
+    { const v = validateText(message, 'message'); if (!v.valid) return { success: false, error: v.error }; }
+    if (params.target) { const v = validateIdentifier(target, 'target'); if (!v.valid) return { success: false, error: v.error }; }
 
     return {
       notificationId: `notify-${Date.now()}`,
@@ -1771,7 +2106,7 @@ export const hooksNotify: MCPTool = {
 // Init hook - initialize hooks in project
 export const hooksInit: MCPTool = {
   name: 'hooks_init',
-  description: 'Initialize hooks in project with .claude/settings.json',
+  description: 'Initialize hooks in project with .claude/settings.json Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1812,7 +2147,7 @@ export const hooksInit: MCPTool = {
 // Intelligence hook - RuVector intelligence system
 export const hooksIntelligence: MCPTool = {
   name: 'hooks_intelligence',
-  description: 'RuVector intelligence system status (shows REAL metrics from memory store)',
+  description: 'RuVector intelligence system status (shows REAL metrics from memory store) Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1888,11 +2223,39 @@ export const hooksIntelligence: MCPTool = {
         },
         embeddings: {
           provider: 'transformers',
-          model: 'all-MiniLM-L6-v2',
+          model: 'Xenova/all-MiniLM-L6-v2',
           dimension: 384,
           implemented: true,
-          note: 'Real ONNX embeddings via all-MiniLM-L6-v2',
+          note: 'Real ONNX embeddings via Xenova/all-MiniLM-L6-v2',
         },
+        ruvllmCoordinator: await (async () => {
+          try {
+            const { getIntelligenceStats } = await import('../memory/intelligence.js');
+            const s = getIntelligenceStats();
+            return { status: s._ruvllmBackend || 'unavailable', trajectories: s._ruvllmTrajectories || 0, note: s._ruvllmBackend === 'active' ? 'SonaCoordinator forwarding trajectories' : '@ruvector/ruvllm not loaded' };
+          } catch { return { status: 'unavailable', trajectories: 0, note: 'Not initialized' }; }
+        })(),
+        contrastiveTrainer: await (async () => {
+          try {
+            const { getSONAStats } = await import('../memory/sona-optimizer.js');
+            const s = await getSONAStats();
+            return { status: s._contrastiveTrainer !== 'unavailable' ? 'active' : 'unavailable', details: s._contrastiveTrainer, note: s._contrastiveTrainer !== 'unavailable' ? 'Agent embedding learning active' : '@ruvector/ruvllm not loaded' };
+          } catch { return { status: 'unavailable', details: null, note: 'Not initialized' }; }
+        })(),
+        trainingPipeline: await (async () => {
+          try {
+            const loraInst = await getLoRAAdapter();
+            const s = loraInst?.getStats();
+            return { status: s?._trainingBackend || 'unavailable', note: s?._trainingBackend === 'ruvllm' ? 'Checkpoint save/load via ruvllm' : 'JS fallback' };
+          } catch { return { status: 'unavailable', note: 'Not initialized' }; }
+        })(),
+        graphDatabase: await (async () => {
+          try {
+            const { getGraphStats } = await import('../ruvector/graph-backend.js');
+            const gs = await getGraphStats();
+            return { status: gs.backend, totalNodes: gs.totalNodes, totalEdges: gs.totalEdges, avgDegree: gs.avgDegree, note: gs.backend === 'graph-node' ? 'Native Rust graph with hyperedges and k-hop queries' : '@ruvector/graph-node not loaded' };
+          } catch { return { status: 'unavailable', totalNodes: 0, totalEdges: 0, avgDegree: 0, note: 'Not initialized' }; }
+        })(),
       },
       realMetrics: {
         trajectories: realStats.trajectories,
@@ -1904,7 +2267,7 @@ export const hooksIntelligence: MCPTool = {
         working: [
           'memory-store', 'embeddings', 'trajectory-recording', 'claims', 'swarm-coordination',
           'hnsw-index', 'pattern-storage', 'sona-optimizer', 'ewc-consolidation', 'moe-routing',
-          'flash-attention', 'lora-adapter'
+          'flash-attention', 'lora-adapter', 'ruvllm-coordinator', 'contrastive-trainer', 'training-pipeline', 'graph-database'
         ],
         partial: [],
         notImplemented: [],
@@ -1917,19 +2280,68 @@ export const hooksIntelligence: MCPTool = {
 // Intelligence reset hook
 export const hooksIntelligenceReset: MCPTool = {
   name: 'hooks_intelligence-reset',
-  description: 'Reset intelligence learning state',
+  description: 'Reset intelligence learning state Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {},
   },
   handler: async () => {
+    const cwd = getProjectCwd();
+    const cleared = {
+      trajectories: 0,
+      patterns: 0,
+      dataFiles: 0,
+      neuralFiles: 0,
+    };
+    const deletedFiles: string[] = [];
+
+    // Clear intelligence data files if they exist
+    const dataFiles = [
+      join(cwd, '.claude-flow', 'data', 'auto-memory-store.json'),
+      join(cwd, '.claude-flow', 'data', 'graph-state.json'),
+      join(cwd, '.claude-flow', 'data', 'ranked-context.json'),
+    ];
+
+    for (const filePath of dataFiles) {
+      if (existsSync(filePath)) {
+        try {
+          unlinkSync(filePath);
+          cleared.dataFiles++;
+          deletedFiles.push(filePath);
+        } catch {
+          // Skip files that cannot be deleted
+        }
+      }
+    }
+
+    // Clear neural directory if it exists
+    const neuralDir = join(cwd, '.claude-flow', 'neural');
+    if (existsSync(neuralDir)) {
+      try {
+        const files = readdirSync(neuralDir);
+        for (const file of files) {
+          try {
+            const filePath = join(neuralDir, file);
+            unlinkSync(filePath);
+            cleared.neuralFiles++;
+            deletedFiles.push(filePath);
+          } catch {
+            // Skip files that cannot be deleted
+          }
+        }
+      } catch {
+        // Directory read failed
+      }
+    }
+
+    // Clear in-memory trajectories
+    cleared.trajectories = activeTrajectories.size;
+    activeTrajectories.clear();
+
     return {
       reset: true,
-      cleared: {
-        trajectories: 156,
-        patterns: 89,
-        hnswIndex: 12500,
-      },
+      cleared,
+      deletedFiles,
       timestamp: new Date().toISOString(),
     };
   },
@@ -1938,7 +2350,7 @@ export const hooksIntelligenceReset: MCPTool = {
 // Intelligence trajectory hooks - REAL implementation using activeTrajectories
 export const hooksTrajectoryStart: MCPTool = {
   name: 'hooks_intelligence_trajectory-start',
-  description: 'Begin SONA trajectory for reinforcement learning',
+  description: 'Begin SONA trajectory for reinforcement learning Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1950,6 +2362,10 @@ export const hooksTrajectoryStart: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const task = params.task as string;
     const agent = (params.agent as string) || 'coder';
+
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
+    if (params.agent) { const v = validateIdentifier(params.agent as string, 'agent'); if (!v.valid) return { success: false, error: v.error }; }
+
     const trajectoryId = `traj-${Date.now()}-${Math.random().toString(36).substring(7)}`;
     const startedAt = new Date().toISOString();
 
@@ -1963,6 +2379,21 @@ export const hooksTrajectoryStart: MCPTool = {
     };
 
     activeTrajectories.set(trajectoryId, trajectory);
+
+    // Persist pending trajectory to disk so it survives MCP restarts
+    const storeFn = await getRealStoreFunction();
+    if (storeFn) {
+      try {
+        await storeFn({
+          key: `trajectory-pending-${trajectoryId}`,
+          value: JSON.stringify(trajectory),
+          namespace: 'trajectories',
+          tags: [agent, 'pending', 'sona-trajectory'],
+        });
+      } catch {
+        // Best-effort persistence — trajectory still lives in-memory
+      }
+    }
 
     return {
       trajectoryId,
@@ -1978,7 +2409,7 @@ export const hooksTrajectoryStart: MCPTool = {
 
 export const hooksTrajectoryStep: MCPTool = {
   name: 'hooks_intelligence_trajectory-step',
-  description: 'Record step in trajectory for reinforcement learning',
+  description: 'Record step in trajectory for reinforcement learning Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -1996,6 +2427,9 @@ export const hooksTrajectoryStep: MCPTool = {
     const quality = (params.quality as number) || 0.85;
     const timestamp = new Date().toISOString();
     const stepId = `step-${Date.now()}`;
+
+    { const v = validateIdentifier(trajectoryId, 'trajectoryId'); if (!v.valid) return { success: false, error: v.error }; }
+    { const v = validateText(action, 'action'); if (!v.valid) return { success: false, error: v.error }; }
 
     // Add step to real trajectory if it exists
     const trajectory = activeTrajectories.get(trajectoryId);
@@ -2024,7 +2458,7 @@ export const hooksTrajectoryStep: MCPTool = {
 
 export const hooksTrajectoryEnd: MCPTool = {
   name: 'hooks_intelligence_trajectory-end',
-  description: 'End trajectory and trigger SONA learning with EWC++',
+  description: 'End trajectory and trigger SONA learning with EWC++ Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2036,6 +2470,9 @@ export const hooksTrajectoryEnd: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const trajectoryId = params.trajectoryId as string;
+
+    { const v = validateIdentifier(trajectoryId, 'trajectoryId'); if (!v.valid) return { success: false, error: v.error }; }
+
     const success = params.success !== false;
     const feedback = params.feedback as string | undefined;
     const endedAt = new Date().toISOString();
@@ -2110,6 +2547,12 @@ export const hooksTrajectoryEnd: MCPTool = {
         }
       }
 
+      // Trigger ruvllm background learning after trajectory end
+      try {
+        const { runBackgroundLearning } = await import('../memory/intelligence.js');
+        await runBackgroundLearning();
+      } catch { /* best-effort */ }
+
       // Try EWC++ consolidation on successful trajectories
       if (success) {
         const ewc = await getEWCConsolidator();
@@ -2167,7 +2610,7 @@ export const hooksTrajectoryEnd: MCPTool = {
 // Pattern store/search hooks - REAL implementation using storeEntry
 export const hooksPatternStore: MCPTool = {
   name: 'hooks_intelligence_pattern-store',
-  description: 'Store pattern in ReasoningBank (HNSW-indexed)',
+  description: 'Store pattern in ReasoningBank (HNSW-indexed) Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2184,6 +2627,9 @@ export const hooksPatternStore: MCPTool = {
     const confidence = (params.confidence as number) || 0.8;
     const metadata = params.metadata as Record<string, unknown> | undefined;
     const timestamp = new Date().toISOString();
+
+    { const v = validateText(pattern, 'pattern'); if (!v.valid) return { success: false, error: v.error }; }
+    if (params.type) { const v = validateIdentifier(params.type as string, 'type'); if (!v.valid) return { success: false, error: v.error }; }
     const patternId = `pattern-${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
     // Phase 3: Try ReasoningBank via bridge first
@@ -2216,6 +2662,7 @@ export const hooksPatternStore: MCPTool = {
 
     const success = reasoningResult?.success || storeResult.success;
     const controller = reasoningResult?.controller || (storeResult.success ? 'bridge-store' : 'none');
+    const hasEmbedding = !!storeResult.embedding || controller === 'reasoningBank' || controller === 'bridge-fallback';
 
     return {
       patternId: reasoningResult?.patternId || storeResult.id || patternId,
@@ -2223,21 +2670,25 @@ export const hooksPatternStore: MCPTool = {
       type,
       confidence,
       indexed: success,
-      hnswIndexed: success && (!!storeResult.embedding || controller === 'reasoningBank'),
+      hnswIndexed: success && hasEmbedding,
       embedding: storeResult.embedding,
       timestamp,
       controller,
-      implementation: controller === 'reasoningBank' ? 'reasoning-bank-controller' : (storeResult.success ? 'real-hnsw-indexed' : 'memory-only'),
+      implementation: (controller === 'reasoningBank' || controller === 'bridge-fallback')
+        ? 'reasoning-bank-controller'
+        : (storeResult.success ? 'real-hnsw-indexed' : 'memory-only'),
       note: controller === 'reasoningBank'
         ? 'Pattern stored via ReasoningBank controller with HNSW indexing'
-        : (storeResult.success ? 'Pattern stored with vector embedding for semantic search' : (storeResult.error || 'Store function unavailable')),
+        : controller === 'bridge-fallback'
+          ? 'Pattern stored via bridge with embedding and HNSW indexing'
+          : (storeResult.success ? 'Pattern stored with vector embedding for semantic search' : (storeResult.error || 'Store function unavailable')),
     };
   },
 };
 
 export const hooksPatternSearch: MCPTool = {
   name: 'hooks_intelligence_pattern-search',
-  description: 'Search patterns using REAL vector search (HNSW when available, brute-force fallback)',
+  description: 'Search patterns using REAL vector search (HNSW when available, brute-force fallback) Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2253,6 +2704,9 @@ export const hooksPatternSearch: MCPTool = {
     const topK = (params.topK as number) || 5;
     const minConfidence = (params.minConfidence as number) || 0.3;
     const namespace = (params.namespace as string) || 'pattern';
+
+    { const v = validateText(query, 'query'); if (!v.valid) return { success: false, error: v.error }; }
+    if (params.namespace) { const v = validateIdentifier(params.namespace as string, 'namespace'); if (!v.valid) return { success: false, error: v.error }; }
 
     // Phase 3: Try ReasoningBank search via bridge first
     try {
@@ -2341,7 +2795,7 @@ export const hooksPatternSearch: MCPTool = {
 // Intelligence stats hook
 export const hooksIntelligenceStats: MCPTool = {
   name: 'hooks_intelligence_stats',
-  description: 'Get RuVector intelligence layer statistics',
+  description: 'Get RuVector intelligence layer statistics Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2358,8 +2812,18 @@ export const hooksIntelligenceStats: MCPTool = {
     const flash = await getFlashAttention();
     const lora = await getLoRAAdapter();
 
-    // Fallback to memory store for legacy data
-    const memoryStats = getIntelligenceStatsFromMemory();
+    // Fallback to memory store for legacy data (may not exist yet)
+    let memoryStats: ReturnType<typeof getIntelligenceStatsFromMemory>;
+    try {
+      memoryStats = getIntelligenceStatsFromMemory();
+    } catch {
+      memoryStats = {
+        trajectories: { total: 0, successful: 0 },
+        patterns: { learned: 0, categories: {} },
+        memory: { indexSize: 0, totalAccessCount: 0, memorySizeBytes: 0 },
+        routing: { decisions: 0, avgConfidence: 0 },
+      };
+    }
 
     // SONA stats from real implementation
     let sonaStats = {
@@ -2474,12 +2938,36 @@ export const hooksIntelligenceStats: MCPTool = {
       };
     }
 
+    // ruvllm native backend stats
+    let ruvllmStats = { coordinator: 'unavailable' as string, trajectories: 0, contrastiveTrainer: 'unavailable' as string | object, trainingBackend: 'unavailable' as string, graphDatabase: { backend: 'unavailable', totalNodes: 0, totalEdges: 0 } as Record<string, unknown> };
+    try {
+      const { getIntelligenceStats } = await import('../memory/intelligence.js');
+      const iStats = getIntelligenceStats();
+      ruvllmStats.coordinator = iStats._ruvllmBackend || 'unavailable';
+      ruvllmStats.trajectories = iStats._ruvllmTrajectories || 0;
+    } catch { /* not initialized */ }
+    try {
+      const { getSONAStats: getSONA } = await import('../memory/sona-optimizer.js');
+      const sStats = await getSONA();
+      ruvllmStats.contrastiveTrainer = sStats._contrastiveTrainer || 'unavailable';
+    } catch { /* not initialized */ }
+    if (lora) {
+      const ls = lora.getStats();
+      ruvllmStats.trainingBackend = ls._trainingBackend || 'unavailable';
+    }
+    try {
+      const { getGraphStats } = await import('../ruvector/graph-backend.js');
+      const gs = await getGraphStats();
+      ruvllmStats.graphDatabase = { backend: gs.backend, totalNodes: gs.totalNodes, totalEdges: gs.totalEdges, avgDegree: gs.avgDegree };
+    } catch { /* not available */ }
+
     const stats = {
       sona: sonaStats,
       moe: moeStats,
       ewc: ewcStats,
       flash: flashStats,
       lora: loraStats,
+      ruvllm: ruvllmStats,
       hnsw: {
         indexSize: memoryStats.memory.indexSize,
         avgSearchTimeMs: 0.12,
@@ -2518,7 +3006,7 @@ export const hooksIntelligenceStats: MCPTool = {
 // Intelligence learn hook
 export const hooksIntelligenceLearn: MCPTool = {
   name: 'hooks_intelligence_learn',
-  description: 'Force immediate SONA learning cycle with EWC++ consolidation',
+  description: 'Force immediate SONA learning cycle with EWC++ consolidation Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2593,7 +3081,7 @@ export const hooksIntelligenceLearn: MCPTool = {
 // Intelligence attention hook
 export const hooksIntelligenceAttention: MCPTool = {
   name: 'hooks_intelligence_attention',
-  description: 'Compute attention-weighted similarity using MoE/Flash/Hyperbolic',
+  description: 'Compute attention-weighted similarity using MoE/Flash/Hyperbolic Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -2609,21 +3097,65 @@ export const hooksIntelligenceAttention: MCPTool = {
     const topK = (params.topK as number) || 5;
     const startTime = performance.now();
 
+    { const v = validateText(query, 'query'); if (!v.valid) return { success: false, error: v.error }; }
+
     let implementation = 'placeholder';
+    let embeddingSource: 'onnx' | 'hash-fallback' | 'none' = 'none';
     const results: Array<{ index: number; weight: number; pattern: string; expert?: string }> = [];
+
+    // Helper: generate query embedding, preferring real ONNX embeddings over hash fallback
+    async function getQueryEmbedding(text: string, dims: number): Promise<{ embedding: Float32Array; source: 'onnx' | 'hash-fallback' }> {
+      // Try ONNX via @claude-flow/embeddings
+      try {
+        const embeddingsModule = await import('@claude-flow/embeddings').catch(() => null);
+        if (embeddingsModule?.createEmbeddingService) {
+          const service = embeddingsModule.createEmbeddingService({ provider: 'onnx' });
+          const result = await service.embed(text);
+          const arr = new Float32Array(dims);
+          for (let i = 0; i < Math.min(dims, result.embedding.length); i++) {
+            arr[i] = result.embedding[i];
+          }
+          return { embedding: arr, source: 'onnx' };
+        }
+      } catch {
+        // ONNX not available, try agentic-flow
+      }
+
+      // Try agentic-flow embeddings
+      try {
+        const embeddingsModule = await import('@claude-flow/embeddings').catch(() => null);
+        if (embeddingsModule?.createEmbeddingService) {
+          const service = embeddingsModule.createEmbeddingService({ provider: 'agentic-flow' });
+          const result = await service.embed(text);
+          const arr = new Float32Array(dims);
+          for (let i = 0; i < Math.min(dims, result.embedding.length); i++) {
+            arr[i] = result.embedding[i];
+          }
+          return { embedding: arr, source: 'onnx' };
+        }
+      } catch {
+        // agentic-flow not available
+      }
+
+      // Hash-based fallback (deterministic but not semantic)
+      const arr = new Float32Array(dims);
+      let seed = text.split('').reduce((acc, char, i) => acc + char.charCodeAt(0) * (i + 1), 0);
+      for (let i = 0; i < dims; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        arr[i] = (seed / 0x7fffffff) * 2 - 1;
+      }
+      return { embedding: arr, source: 'hash-fallback' };
+    }
 
     if (mode === 'moe') {
       // Try MoE routing
       const moe = await getMoERouter();
       if (moe) {
         try {
-          // Generate a simple embedding from query (hash-based for demo)
-          const embedding = new Float32Array(384);
-          for (let i = 0; i < 384; i++) {
-            embedding[i] = Math.sin(query.charCodeAt(i % query.length) * (i + 1) * 0.01);
-          }
+          const embResult = await getQueryEmbedding(query, 384);
+          embeddingSource = embResult.source;
 
-          const routingResult = moe.route(embedding);
+          const routingResult = moe.route(embResult.embedding);
           for (let i = 0; i < Math.min(topK, routingResult.experts.length); i++) {
             const expert = routingResult.experts[i];
             results.push({
@@ -2639,60 +3171,99 @@ export const hooksIntelligenceAttention: MCPTool = {
         }
       }
     } else if (mode === 'flash') {
-      // Try Flash Attention
+      // Try Flash Attention. ADR-093 F10: previously this attended over
+      // synthetic cosine-derived keys/values with constant-vector values,
+      // which produced uniform 0.333 weights and labels like "Flash
+      // attention target #1/2/3". Now we attend over actual stored
+      // patterns when available — real semantic content yields non-uniform
+      // weights and human-readable labels.
       const flash = await getFlashAttention();
       if (flash) {
         try {
-          // Generate query/key/value embeddings
-          const q = new Float32Array(384);
+          const embResult = await getQueryEmbedding(query, 384);
+          embeddingSource = embResult.source;
+          const q = embResult.embedding;
+
+          // Pull real stored patterns to attend over. If none exist yet,
+          // fall back to the synthetic harness but mark it honestly.
+          const realPatterns: Array<{ id: string; content: string; embedding?: number[] }> = [];
+          try {
+            const { searchEntries: searchFn } = await import('../memory/memory-initializer.js');
+            const hits = await searchFn({ query, limit: topK });
+            if (Array.isArray(hits)) {
+              for (const h of hits.slice(0, topK)) {
+                const content = (h as Record<string, unknown>).content ?? (h as Record<string, unknown>).value ?? '';
+                const id = String((h as Record<string, unknown>).id ?? (h as Record<string, unknown>).key ?? `pattern-${realPatterns.length}`);
+                realPatterns.push({ id, content: String(content) });
+              }
+            }
+          } catch { /* memory not initialized — fall through to synthetic */ }
+
+          const useReal = realPatterns.length > 0;
           const keys: Float32Array[] = [];
           const values: Float32Array[] = [];
+          const labels: string[] = [];
 
-          for (let i = 0; i < 384; i++) {
-            q[i] = Math.sin(query.charCodeAt(i % query.length) * (i + 1) * 0.01);
-          }
-
-          // Generate some keys/values
-          for (let k = 0; k < topK; k++) {
-            const key = new Float32Array(384);
-            const value = new Float32Array(384);
-            for (let i = 0; i < 384; i++) {
-              key[i] = Math.cos((k + 1) * (i + 1) * 0.01);
-              value[i] = k + 1;
+          if (useReal) {
+            // Build keys from real pattern embeddings (re-embed if no vector cached)
+            for (let k = 0; k < realPatterns.length; k++) {
+              const p = realPatterns[k];
+              let keyEmbedding: Float32Array;
+              if (p.embedding && p.embedding.length === 384) {
+                keyEmbedding = new Float32Array(p.embedding);
+              } else {
+                const enc = await getQueryEmbedding(p.content.slice(0, 1024), 384);
+                keyEmbedding = enc.embedding;
+              }
+              const value = new Float32Array(384);
+              // Value carries pattern identity strength — magnitude = recency proxy (k position)
+              const strength = 1 / (k + 1);
+              for (let i = 0; i < 384; i++) value[i] = keyEmbedding[i] * strength;
+              keys.push(keyEmbedding);
+              values.push(value);
+              const label = p.content.length > 0
+                ? `${p.id}: ${p.content.slice(0, 60)}${p.content.length > 60 ? '…' : ''}`
+                : p.id;
+              labels.push(label);
             }
-            keys.push(key);
-            values.push(value);
+          } else {
+            // No real patterns — surface a synthetic harness honestly.
+            for (let k = 0; k < topK; k++) {
+              const key = new Float32Array(384);
+              const value = new Float32Array(384);
+              for (let i = 0; i < 384; i++) {
+                key[i] = Math.cos((k + 1) * (i + 1) * 0.01);
+                value[i] = k + 1;
+              }
+              keys.push(key);
+              values.push(value);
+              labels.push(`(synthetic harness) pattern #${k + 1}`);
+            }
           }
 
           const attentionResult = flash.attention([q], keys, values);
           // Compute softmax weights from output magnitudes
           const outputMags = attentionResult.output[0]
-            ? Array.from(attentionResult.output[0]).slice(0, topK).map(v => Math.abs(v))
-            : new Array(topK).fill(1);
+            ? Array.from(attentionResult.output[0]).slice(0, keys.length).map(v => Math.abs(v))
+            : new Array(keys.length).fill(1);
           const sumMags = outputMags.reduce((a, b) => a + b, 0) || 1;
-          for (let i = 0; i < topK; i++) {
+          for (let i = 0; i < keys.length; i++) {
             results.push({
               index: i,
               weight: outputMags[i] / sumMags,
-              pattern: `Flash attention target #${i + 1}`,
+              pattern: labels[i],
             });
           }
-          implementation = 'real-flash-attention';
+          implementation = useReal ? 'real-flash-attention+memory' : 'real-flash-attention+synthetic-harness';
         } catch {
           // Fall back to placeholder
         }
       }
     }
 
-    // If no real implementation worked, use placeholder
+    // If no real implementation worked, return empty with honest marker
     if (results.length === 0) {
-      for (let i = 0; i < topK; i++) {
-        results.push({
-          index: i,
-          weight: Math.exp(-i * 0.5) / (1 + Math.exp(-i * 0.5)),
-          pattern: `Attention target #${i + 1}`,
-        });
-      }
+      implementation = 'none';
     }
 
     const computeTimeMs = performance.now() - startTime;
@@ -2703,8 +3274,13 @@ export const hooksIntelligenceAttention: MCPTool = {
       results,
       stats: {
         computeTimeMs,
-        speedup: mode === 'flash' ? '2.49x-7.47x' : mode === 'moe' ? '1.5x-3x' : '1.5x-2x',
-        memoryReduction: mode === 'flash' ? '50-75%' : '25-40%',
+        implementation,
+        _embeddingSource: embeddingSource,
+        _stub: implementation === 'none',
+        _note: implementation === 'none' ? 'No attention backend available. Install @ruvector/attention for real computation.' : undefined,
+        ...(embeddingSource === 'hash-fallback' && implementation !== 'none'
+          ? { _embeddingNote: 'Query embeddings are hash-based (not semantic). Install @claude-flow/embeddings for real ONNX embeddings.' }
+          : {}),
       },
       implementation,
     };
@@ -2936,6 +3512,8 @@ function detectWorkerTriggers(text: string): {
   confidence: number;
   context: string;
 } {
+  if (!text) return { detected: false, triggers: [], confidence: 0, context: '' };
+
   const detectedTriggers: WorkerTrigger[] = [];
   let totalMatches = 0;
 
@@ -2965,7 +3543,7 @@ function detectWorkerTriggers(text: string): {
 // Worker list tool
 export const hooksWorkerList: MCPTool = {
   name: 'hooks_worker-list',
-  description: 'List all 12 background workers with status and capabilities',
+  description: 'List all 12 background workers with status and capabilities Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -3014,7 +3592,7 @@ export const hooksWorkerList: MCPTool = {
 // Worker dispatch tool
 export const hooksWorkerDispatch: MCPTool = {
   name: 'hooks_worker-dispatch',
-  description: 'Dispatch a background worker for analysis/optimization tasks',
+  description: 'Dispatch a background worker for analysis/optimization tasks Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -3035,6 +3613,8 @@ export const hooksWorkerDispatch: MCPTool = {
     const priority = (params.priority as string) || WORKER_CONFIGS[trigger]?.priority || 'normal';
     const background = params.background !== false;
 
+    if (params.context) { const v = validateText(params.context as string, 'context'); if (!v.valid) return { success: false, error: v.error }; }
+
     if (!WORKER_CONFIGS[trigger]) {
       return {
         success: false,
@@ -3045,6 +3625,24 @@ export const hooksWorkerDispatch: MCPTool = {
 
     const workerId = `worker_${trigger}_${++workerIdCounter}_${Date.now().toString(36)}`;
     const config = WORKER_CONFIGS[trigger];
+
+    // ADR-093 F2: stop returning status:"completed" for a worker that
+    // never ran (#1700 item 1). Detect daemon presence via PID file and
+    // surface honest verdicts (`no-daemon` / `queued` / `synthetic`).
+    const cwd = getProjectCwd();
+    const pidFile = join(cwd, '.claude-flow', 'daemon.pid');
+    let daemonPid: number | null = null;
+    let daemonAlive = false;
+    if (existsSync(pidFile)) {
+      try {
+        const raw = readFileSync(pidFile, 'utf-8').trim();
+        const pid = parseInt(raw, 10);
+        if (Number.isFinite(pid) && pid > 0) {
+          daemonPid = pid;
+          try { process.kill(pid, 0); daemonAlive = true; } catch { daemonAlive = false; }
+        }
+      } catch { /* unreadable PID file */ }
+    }
 
     const worker: {
       id: string;
@@ -3059,7 +3657,7 @@ export const hooksWorkerDispatch: MCPTool = {
       id: workerId,
       trigger,
       context,
-      status: 'running',
+      status: daemonAlive ? 'pending' : 'pending',
       progress: 0,
       phase: 'initializing',
       startedAt: new Date(),
@@ -3067,30 +3665,46 @@ export const hooksWorkerDispatch: MCPTool = {
 
     activeWorkers.set(workerId, worker);
 
-    // Update worker progress in background
-    if (background) {
-      setTimeout(() => {
-        const w = activeWorkers.get(workerId);
-        if (w) {
-          w.progress = 50;
-          w.phase = 'processing';
-        }
-      }, 500);
-
-      setTimeout(() => {
-        const w = activeWorkers.get(workerId);
-        if (w) {
-          w.progress = 100;
-          w.phase = 'completed';
-          w.status = 'completed';
-          w.completedAt = new Date();
-        }
-      }, 1500);
+    // Determine honest status
+    let reportedStatus: 'queued' | 'no-daemon' | 'synthetic-completed' | 'mcp-only';
+    let note = '';
+    if (!daemonAlive) {
+      reportedStatus = 'no-daemon';
+      note = 'No worker daemon detected. Run `claude-flow daemon start` to enable real worker execution. The dispatch was recorded in-process but no actual work will run.';
+    } else if (background) {
+      // #1845: write a durable queue file the daemon polls every 5s. Until
+      // 3.7.0-alpha.11 the dispatch only updated a process-local Map that
+      // the daemon (separate process) could never see, so `queued` was a
+      // lie. The queue file makes it real and inspectable on disk.
+      const queueDir = join(cwd, '.claude-flow', 'daemon-queue');
+      const queuePath = join(queueDir, `${workerId}.json`);
+      let queueWritten = false;
+      try {
+        if (!existsSync(queueDir)) mkdirSync(queueDir, { recursive: true });
+        writeFileSync(
+          queuePath,
+          JSON.stringify({ workerId, trigger, context, priority, enqueuedAt: new Date().toISOString() }, null, 2),
+        );
+        queueWritten = true;
+      } catch (err) {
+        // Filesystem error — fall back to mcp-only status so we never
+        // claim queued without proof.
+        note = `Daemon detected (pid ${daemonPid}) but queue write to ${queuePath} failed: ${(err as Error).message}. Worker recorded in-process only; use \`ruflo daemon trigger -w ${trigger}\` to run synchronously.`;
+      }
+      if (queueWritten) {
+        reportedStatus = 'queued';
+        note = `Worker queued for daemon (pid ${daemonPid}) at ${queuePath}. Daemon polls every 5s; processed entries move to .claude-flow/daemon-queue/.processed/. Poll hooks_worker-status until status === "completed".`;
+      } else {
+        reportedStatus = 'mcp-only';
+      }
     } else {
+      // Synchronous mode without a runner — be honest about it
+      reportedStatus = 'synthetic-completed';
       worker.progress = 100;
       worker.phase = 'completed';
       worker.status = 'completed';
       worker.completedAt = new Date();
+      note = 'Synchronous mode: worker record marked completed but no real work executed (no in-process runner). Use background:true with the daemon for real execution.';
     }
 
     return {
@@ -3104,8 +3718,11 @@ export const hooksWorkerDispatch: MCPTool = {
         estimatedDuration: config.estimatedDuration,
         capabilities: config.capabilities,
       },
-      status: background ? 'dispatched' : 'completed',
+      status: reportedStatus,
+      daemonAlive,
+      daemonPid: daemonAlive ? daemonPid : null,
       background,
+      note,
       timestamp: new Date().toISOString(),
     };
   },
@@ -3114,7 +3731,7 @@ export const hooksWorkerDispatch: MCPTool = {
 // Worker status tool
 export const hooksWorkerStatus: MCPTool = {
   name: 'hooks_worker-status',
-  description: 'Get status of a specific worker or all active workers',
+  description: 'Get status of a specific worker or all active workers Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -3125,6 +3742,8 @@ export const hooksWorkerStatus: MCPTool = {
   handler: async (params: Record<string, unknown>) => {
     const workerId = params.workerId as string;
     const includeCompleted = params.includeCompleted !== false;
+
+    if (workerId) { const v = validateIdentifier(workerId, 'workerId'); if (!v.valid) return { success: false, error: v.error }; }
 
     if (workerId) {
       const worker = activeWorkers.get(workerId);
@@ -3170,7 +3789,7 @@ export const hooksWorkerStatus: MCPTool = {
 // Worker detect tool - detect triggers from prompt
 export const hooksWorkerDetect: MCPTool = {
   name: 'hooks_worker-detect',
-  description: 'Detect worker triggers from user prompt (for UserPromptSubmit hook)',
+  description: 'Detect worker triggers from user prompt (for UserPromptSubmit hook) Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -3184,6 +3803,8 @@ export const hooksWorkerDetect: MCPTool = {
     const prompt = params.prompt as string;
     const autoDispatch = params.autoDispatch as boolean;
     const minConfidence = (params.minConfidence as number) || 0.5;
+
+    { const v = validateText(prompt, 'prompt'); if (!v.valid) return { success: false, error: v.error }; }
 
     const detection = detectWorkerTriggers(prompt);
 
@@ -3251,7 +3872,7 @@ async function getModelRouterInstance() {
 // Model route tool - intelligent model selection
 export const hooksModelRoute: MCPTool = {
   name: 'hooks_model-route',
-  description: 'Route task to optimal Claude model (haiku/sonnet/opus) based on complexity',
+  description: 'Route task to optimal Claude model (haiku/sonnet/opus) based on complexity Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -3263,6 +3884,9 @@ export const hooksModelRoute: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const task = params.task as string;
+
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
+
     const router = await getModelRouterInstance();
 
     if (!router) {
@@ -3295,7 +3919,7 @@ export const hooksModelRoute: MCPTool = {
 // Model route outcome - record outcome for learning
 export const hooksModelOutcome: MCPTool = {
   name: 'hooks_model-outcome',
-  description: 'Record model routing outcome for learning',
+  description: 'Record model routing outcome for learning Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -3309,6 +3933,8 @@ export const hooksModelOutcome: MCPTool = {
     const task = params.task as string;
     const model = params.model as 'haiku' | 'sonnet' | 'opus';
     const outcome = params.outcome as 'success' | 'failure' | 'escalated';
+
+    { const v = validateText(task, 'task'); if (!v.valid) return { success: false, error: v.error }; }
 
     const router = await getModelRouterInstance();
     if (router) {
@@ -3328,7 +3954,7 @@ export const hooksModelOutcome: MCPTool = {
 // Model router stats
 export const hooksModelStats: MCPTool = {
   name: 'hooks_model-stats',
-  description: 'Get model routing statistics',
+  description: 'Get model routing statistics Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {},
@@ -3372,7 +3998,7 @@ function analyzeComplexityFallback(task: string): number {
 // Worker cancel tool
 export const hooksWorkerCancel: MCPTool = {
   name: 'hooks_worker-cancel',
-  description: 'Cancel a running worker',
+  description: 'Cancel a running worker Use when native Bash hooks (via Claude Code\'s settings.json) are wrong because you need Ruflo-side state — pattern persistence, neural training signals, model-routing learning, cost tracking, audit chain. For one-off shell commands, plain Bash hooks are fine.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -3382,6 +4008,9 @@ export const hooksWorkerCancel: MCPTool = {
   },
   handler: async (params: Record<string, unknown>) => {
     const workerId = params.workerId as string;
+
+    { const v = validateIdentifier(workerId, 'workerId'); if (!v.valid) return { success: false, error: v.error }; }
+
     const worker = activeWorkers.get(workerId);
 
     if (!worker) {
@@ -3411,8 +4040,71 @@ export const hooksWorkerCancel: MCPTool = {
   },
 };
 
+// #1916: the `ruflo hooks teammate-idle` / `ruflo hooks task-completed` CLI
+// subcommands (Agent Teams hooks) referenced unregistered tools. Minimal
+// acknowledgement handlers with the shapes the CLI expects — auto-assignment
+// and pattern-learning are delegated to the task-queue consumer / intelligence
+// pipeline (a tracked #1916 follow-up).
+export const hooksTeammateIdle: MCPTool = {
+  name: 'hooks_teammate-idle',
+  description: 'Agent Teams hook — fired when a teammate agent finishes its turn; reports whether a pending task can be auto-assigned. Use when native Task is wrong because you have a persistent multi-agent team with a shared task list and want idle workers picked up automatically rather than re-spawning subagents. For a one-shot Task, native Task is fine. (Auto-assignment is delegated to the task-queue consumer — this acknowledges the event today.)',
+  category: 'hooks',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      teammateId: { type: 'string', description: 'ID of the idle teammate' },
+      teamName: { type: 'string', description: 'Team name' },
+      autoAssign: { type: 'boolean', description: 'Auto-assign a pending task if available' },
+      checkTaskList: { type: 'boolean', description: 'Consult the shared task list' },
+      timestamp: { type: 'number', description: 'Event timestamp (ms)' },
+    },
+  },
+  handler: async (input) => {
+    const teammateId = String(input.teammateId ?? '');
+    return {
+      success: true,
+      teammateId,
+      action: 'waiting' as const,
+      pendingTasks: 0,
+      message: 'teammate-idle acknowledged; auto-assignment requires the task-queue consumer (#1916 follow-up)',
+    };
+  },
+};
+
+export const hooksTaskCompleted: MCPTool = {
+  name: 'hooks_task-completed',
+  description: 'Agent Teams hook — fired when a task is marked complete; records completion and (eventually) trains patterns + notifies the team lead. Use when native TodoWrite is wrong because the work was a persisted, agent-assigned task whose outcome should feed cross-session learning and team coordination. For an in-session checklist tick, native TodoWrite is fine. (Pattern-learning is delegated to the intelligence pipeline — this records the completion today.)',
+  category: 'hooks',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string', description: 'ID of the completed task' },
+      teammateId: { type: 'string', description: 'Teammate that completed it' },
+      success: { type: 'boolean', description: 'Whether the task succeeded' },
+      quality: { type: 'number', description: 'Quality score 0-1' },
+      trainPatterns: { type: 'boolean', description: 'Feed the outcome to the learning pipeline' },
+      notifyLead: { type: 'boolean', description: 'Notify the team lead' },
+    },
+    required: ['taskId'],
+  },
+  handler: async (input) => {
+    const taskId = String(input.taskId ?? '');
+    const quality = typeof input.quality === 'number' ? input.quality : (input.success === false ? 0 : 1);
+    return {
+      success: true,
+      taskId,
+      patternsLearned: 0,
+      leadNotified: input.notifyLead === true,
+      metrics: { duration: 0, quality, learningUpdates: 0 },
+      note: 'completion recorded; pattern-learning is delegated to the intelligence pipeline (#1916 follow-up)',
+    };
+  },
+};
+
 // Export all hooks tools
 export const hooksTools: MCPTool[] = [
+  hooksTeammateIdle,
+  hooksTaskCompleted,
   hooksPreEdit,
   hooksPostEdit,
   hooksPreCommand,

@@ -8,6 +8,11 @@
  * Security: Addresses prototype pollution, NaN bypass, input validation
  */
 
+import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { homedir } from 'node:os';
+
 // ── Constants ─────────────────────────────────────────────────
 
 export const STATE_DIR = '.claude-flow/data';
@@ -113,9 +118,8 @@ export function validateTaskSources(sources: unknown): string[] {
 // ── State Management ──────────────────────────────────────────
 
 export function getDefaultState(): AutopilotState {
-  const crypto = require('crypto') as typeof import('crypto');
   return {
-    sessionId: crypto.randomUUID(),
+    sessionId: randomUUID(),
     enabled: false,
     startTime: Date.now(),
     iterations: 0,
@@ -128,13 +132,11 @@ export function getDefaultState(): AutopilotState {
 }
 
 export function loadState(): AutopilotState {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-  const filePath = path.resolve(STATE_FILE);
+  const filePath = resolve(STATE_FILE);
   const defaults = getDefaultState();
   try {
-    if (fs.existsSync(filePath)) {
-      const raw = safeJsonParse<Partial<AutopilotState>>(fs.readFileSync(filePath, 'utf-8'));
+    if (existsSync(filePath)) {
+      const raw = safeJsonParse<Partial<AutopilotState>>(readFileSync(filePath, 'utf-8'));
       const merged = { ...defaults, ...raw };
       // Re-validate fields that could be tampered with
       merged.maxIterations = validateNumber(merged.maxIterations, 1, 1000, 50);
@@ -154,29 +156,25 @@ export function loadState(): AutopilotState {
 }
 
 export function saveState(state: AutopilotState): void {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-  const dir = path.resolve(STATE_DIR);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const dir = resolve(STATE_DIR);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   // Cap history before saving
   if (state.history.length > MAX_HISTORY_ENTRIES) {
     state.history = state.history.slice(-MAX_HISTORY_ENTRIES);
   }
-  const tmpFile = path.resolve(STATE_FILE) + '.tmp';
-  fs.writeFileSync(tmpFile, JSON.stringify(state, null, 2));
-  fs.renameSync(tmpFile, path.resolve(STATE_FILE));
+  const tmpFile = resolve(STATE_FILE) + '.tmp';
+  writeFileSync(tmpFile, JSON.stringify(state, null, 2));
+  renameSync(tmpFile, resolve(STATE_FILE));
 }
 
 export function appendLog(entry: AutopilotLogEntry): void {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-  const filePath = path.resolve(LOG_FILE);
-  const dir = path.resolve(STATE_DIR);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const filePath = resolve(LOG_FILE);
+  const dir = resolve(STATE_DIR);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   let log: AutopilotLogEntry[] = [];
   try {
-    if (fs.existsSync(filePath)) {
-      log = safeJsonParse<AutopilotLogEntry[]>(fs.readFileSync(filePath, 'utf-8'));
+    if (existsSync(filePath)) {
+      log = safeJsonParse<AutopilotLogEntry[]>(readFileSync(filePath, 'utf-8'));
       if (!Array.isArray(log)) log = [];
     }
   } catch {
@@ -185,17 +183,15 @@ export function appendLog(entry: AutopilotLogEntry): void {
   log.push(entry);
   if (log.length > MAX_LOG_ENTRIES) log = log.slice(-MAX_LOG_ENTRIES);
   const tmpFile = filePath + '.tmp';
-  fs.writeFileSync(tmpFile, JSON.stringify(log, null, 2));
-  fs.renameSync(tmpFile, filePath);
+  writeFileSync(tmpFile, JSON.stringify(log, null, 2));
+  renameSync(tmpFile, filePath);
 }
 
 export function loadLog(): AutopilotLogEntry[] {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-  const filePath = path.resolve(LOG_FILE);
+  const filePath = resolve(LOG_FILE);
   try {
-    if (fs.existsSync(filePath)) {
-      const result = safeJsonParse<AutopilotLogEntry[]>(fs.readFileSync(filePath, 'utf-8'));
+    if (existsSync(filePath)) {
+      const result = safeJsonParse<AutopilotLogEntry[]>(readFileSync(filePath, 'utf-8'));
       return Array.isArray(result) ? result : [];
     }
   } catch {
@@ -207,9 +203,6 @@ export function loadLog(): AutopilotLogEntry[] {
 // ── Task Discovery ────────────────────────────────────────────
 
 export function discoverTasks(sources: string[]): TaskInfo[] {
-  const fs = require('fs') as typeof import('fs');
-  const path = require('path') as typeof import('path');
-  const os = require('os') as typeof import('os');
   const tasks: TaskInfo[] = [];
 
   // Only process valid sources
@@ -217,17 +210,17 @@ export function discoverTasks(sources: string[]): TaskInfo[] {
 
   for (const source of validSources) {
     if (source === 'team-tasks') {
-      const tasksDir = path.join(os.homedir(), '.claude', 'tasks');
+      const tasksDir = join(homedir(), '.claude', 'tasks');
       try {
-        if (fs.existsSync(tasksDir)) {
-          const teams = fs.readdirSync(tasksDir, { withFileTypes: true });
+        if (existsSync(tasksDir)) {
+          const teams = readdirSync(tasksDir, { withFileTypes: true });
           for (const team of teams) {
             if (!team.isDirectory()) continue;
-            const teamDir = path.join(tasksDir, team.name);
-            const files = fs.readdirSync(teamDir).filter((f: string) => f.endsWith('.json'));
+            const teamDir = join(tasksDir, team.name);
+            const files = readdirSync(teamDir).filter((f: string) => f.endsWith('.json'));
             for (const file of files) {
               try {
-                const data = safeJsonParse<Record<string, unknown>>(fs.readFileSync(path.join(teamDir, file), 'utf-8'));
+                const data = safeJsonParse<Record<string, unknown>>(readFileSync(join(teamDir, file), 'utf-8'));
                 tasks.push({
                   id: String(data.id || file.replace('.json', '')),
                   subject: String(data.subject || data.title || file),
@@ -242,10 +235,10 @@ export function discoverTasks(sources: string[]): TaskInfo[] {
     }
 
     if (source === 'swarm-tasks') {
-      const swarmFile = path.resolve('.claude-flow/swarm-tasks.json');
+      const swarmFile = resolve('.claude-flow/swarm-tasks.json');
       try {
-        if (fs.existsSync(swarmFile)) {
-          const data = safeJsonParse<Record<string, unknown> | unknown[]>(fs.readFileSync(swarmFile, 'utf-8'));
+        if (existsSync(swarmFile)) {
+          const data = safeJsonParse<Record<string, unknown> | unknown[]>(readFileSync(swarmFile, 'utf-8'));
           const swarmTasks = Array.isArray(data) ? data : ((data as Record<string, unknown>).tasks as unknown[] || []);
           for (const t of swarmTasks) {
             if (t && typeof t === 'object') {
@@ -263,10 +256,10 @@ export function discoverTasks(sources: string[]): TaskInfo[] {
     }
 
     if (source === 'file-checklist') {
-      const checklistFile = path.resolve('.claude-flow/data/checklist.json');
+      const checklistFile = resolve('.claude-flow/data/checklist.json');
       try {
-        if (fs.existsSync(checklistFile)) {
-          const data = safeJsonParse<Record<string, unknown> | unknown[]>(fs.readFileSync(checklistFile, 'utf-8'));
+        if (existsSync(checklistFile)) {
+          const data = safeJsonParse<Record<string, unknown> | unknown[]>(readFileSync(checklistFile, 'utf-8'));
           const items = Array.isArray(data) ? data : ((data as Record<string, unknown>).items as unknown[] || []);
           for (const item of items) {
             if (item && typeof item === 'object') {

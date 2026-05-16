@@ -7,12 +7,19 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { MCPTool } from './types.js';
+import { type MCPTool, getProjectCwd } from './types.js';
+import { validateIdentifier, validateText, validateAgentSpawn } from './validate-input.js';
+import { executeAgentTask } from './agent-execute-core.js';
 
 // Storage paths
 const STORAGE_DIR = '.claude-flow';
 const AGENT_DIR = 'agents';
 const AGENT_FILE = 'store.json';
+// #1916: hive-mind_spawn writes its workers to `.claude-flow/agents.json`
+// (a *different* file from the canonical `.claude-flow/agents/store.json`
+// used here). agent_status / agent_list / agent_logs merge that store so a
+// hive-spawned worker is resolvable instead of returning `not_found`.
+const HIVE_AGENT_FILE = 'agents.json';
 
 // Model types matching Claude Agent SDK
 type ClaudeModel = 'haiku' | 'sonnet' | 'opus' | 'inherit';
@@ -28,6 +35,7 @@ interface AgentRecord {
   domain?: string;
   model?: ClaudeModel;  // Model assigned to this agent
   modelRoutedBy?: 'explicit' | 'router' | 'agent-booster' | 'default';  // How model was determined (ADR-026)
+  lastResult?: Record<string, unknown>;  // Output from last completed task
 }
 
 interface AgentStore {
@@ -36,7 +44,7 @@ interface AgentStore {
 }
 
 function getAgentDir(): string {
-  return join(process.cwd(), STORAGE_DIR, AGENT_DIR);
+  return join(getProjectCwd(), STORAGE_DIR, AGENT_DIR);
 }
 
 function getAgentPath(): string {
@@ -66,6 +74,35 @@ function loadAgentStore(): AgentStore {
 function saveAgentStore(store: AgentStore): void {
   ensureAgentDir();
   writeFileSync(getAgentPath(), JSON.stringify(store, null, 2), 'utf-8');
+}
+
+// #1916: read hive-mind-spawned workers from `.claude-flow/agents.json`.
+function getHiveAgentPath(): string {
+  return join(getProjectCwd(), STORAGE_DIR, HIVE_AGENT_FILE);
+}
+
+function loadHiveAgents(): Record<string, AgentRecord> {
+  try {
+    const path = getHiveAgentPath();
+    if (existsSync(path)) {
+      const data = JSON.parse(readFileSync(path, 'utf-8'));
+      if (data && typeof data.agents === 'object' && data.agents) {
+        return data.agents as Record<string, AgentRecord>;
+      }
+    }
+  } catch {
+    // Ignore — hive store is optional/best-effort.
+  }
+  return {};
+}
+
+/**
+ * #1916: merged view of every tracked agent — the canonical agent store
+ * plus hive-mind-spawned workers. On an id collision the canonical record
+ * wins (it carries model-routing + lastResult that the hive store omits).
+ */
+function loadAllAgents(): Record<string, AgentRecord> {
+  return { ...loadHiveAgents(), ...loadAgentStore().agents };
 }
 
 // Default model mappings for agent types (can be overridden)
@@ -177,7 +214,7 @@ async function determineAgentModel(
 export const agentTools: MCPTool[] = [
   {
     name: 'agent_spawn',
-    description: 'Spawn a new agent with intelligent model selection',
+    description: 'Spawn a Ruflo-tracked agent with cost attribution + memory persistence + swarm coordination. Use when native Task tool is wrong because you need (a) cost tracking per agent in the cost-tracking namespace, (b) cross-session learning via the patterns namespace, or (c) coordination with other agents in a swarm topology (hierarchical / mesh / consensus). For one-shot subtasks with no learning loop, native Task is fine. Pair with hooks_route to pick the right model first.',
     category: 'agent',
     inputSchema: {
       type: 'object',
@@ -196,6 +233,12 @@ export const agentTools: MCPTool[] = [
       required: ['agentType'],
     },
     handler: async (input) => {
+      // Validate user-provided input (#1425: wire security validators to runtime)
+      const validation = await validateAgentSpawn(input);
+      if (!validation.valid) {
+        return { success: false, error: `Input validation failed: ${validation.errors.join('; ')}` };
+      }
+
       const store = loadAgentStore();
       const agentId = (input.agentId as string) || `agent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const agentType = input.agentType as string;
@@ -232,6 +275,12 @@ export const agentTools: MCPTool[] = [
       store.agents[agentId] = agent;
       saveAgentStore(store);
 
+      // Record agent in graph database (ADR-087, best-effort)
+      try {
+        const { addNode } = await import('../ruvector/graph-backend.js');
+        await addNode({ id: agentId, type: 'agent', name: agentType });
+      } catch { /* graph-node not available */ }
+
       // Include Agent Booster routing info if applicable
       const response: Record<string, unknown> = {
         success: true,
@@ -239,8 +288,12 @@ export const agentTools: MCPTool[] = [
         agentType: agent.agentType,
         model: agent.model,
         modelRoutedBy: routingResult.routedBy,
-        status: 'spawned',
+        status: 'registered',
         createdAt: agent.createdAt,
+        note: 'Agent registered for coordination. Three execution paths: ' +
+          '(1) call agent_execute(agentId, prompt) — direct LLM call via Anthropic Messages API (requires ANTHROPIC_API_KEY); ' +
+          '(2) Claude Code Task tool — spawns a real subagent; ' +
+          '(3) claude -p — headless background instance.',
       };
 
       // Add Agent Booster info if task can skip LLM
@@ -257,8 +310,48 @@ export const agentTools: MCPTool[] = [
     },
   },
   {
+    // ADR-095 G1: real LLM execution via the agent registry. Previously
+    // agent_spawn registered metadata but nothing dispatched work to a
+    // provider — the wire between AnthropicProvider and the agent
+    // registry was missing, as the April audit (@roman-rr) called out.
+    // agent_execute closes that wire by reading the agent's configured
+    // model, calling the Anthropic Messages API directly via fetch, and
+    // updating the agent record with lastResult / taskCount / status.
+    // No mock — actual HTTP request to api.anthropic.com.
+    name: 'agent_execute',
+    description: 'Run a task on a previously-spawned agent_spawn record via the Anthropic Messages API with that agent\'s configured model. Use when native Task tool is wrong because (a) you need the spawned agent\'s persistent config (model, instructions, cost-tracking attribution) to apply to this turn, (b) the result needs to feed back into the agent\'s lifecycle (taskCount, lastResult, swarm-coordinated state), or (c) you want explicit model routing via the spawn record\'s `model` field instead of inheriting. For one-shot Claude prompts without a tracked agent, native Task is fine. Requires ANTHROPIC_API_KEY in env.',
+    category: 'agent',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'ID of the spawned agent' },
+        prompt: { type: 'string', description: 'Task / prompt for the agent to execute' },
+        systemPrompt: { type: 'string', description: 'Optional system prompt (overrides agent default)' },
+        maxTokens: { type: 'number', description: 'Max output tokens (default 1024)' },
+        temperature: { type: 'number', description: 'Sampling temperature 0..1 (default 0.7)' },
+      },
+      required: ['agentId', 'prompt'],
+    },
+    handler: async (input) => {
+      const vId = validateIdentifier(input.agentId, 'agentId');
+      if (!vId.valid) return { success: false, error: `Input validation failed: ${vId.error}` };
+      const vP = validateText(input.prompt as string, 'prompt');
+      if (!vP.valid) return { success: false, error: `Input validation failed: ${vP.error}` };
+
+      // Delegate to the shared core (also used by the workflow runtime).
+      return executeAgentTask({
+        agentId: input.agentId as string,
+        prompt: input.prompt as string,
+        systemPrompt: input.systemPrompt as string | undefined,
+        maxTokens: input.maxTokens as number | undefined,
+        temperature: input.temperature as number | undefined,
+        timeoutMs: input.timeoutMs as number | undefined,
+      });
+    },
+  },
+  {
     name: 'agent_terminate',
-    description: 'Terminate an agent',
+    description: 'Remove a Ruflo-tracked agent from the registry and free its swarm slot. Use when you need to (a) clean up a spawned agent so its cost-tracking row finalizes, (b) reclaim a swarm-topology slot for another agent, or (c) end a stuck agent without restarting the whole swarm. For one-shot Task tool invocations that already self-terminate, this tool is not needed. Pair with agent_list first to confirm the agentId.',
     category: 'agent',
     inputSchema: {
       type: 'object',
@@ -269,6 +362,9 @@ export const agentTools: MCPTool[] = [
       required: ['agentId'],
     },
     handler: async (input) => {
+      const v = validateIdentifier(input.agentId, 'agentId');
+      if (!v.valid) return { success: false, error: `Input validation failed: ${v.error}` };
+
       const store = loadAgentStore();
       const agentId = input.agentId as string;
 
@@ -292,7 +388,7 @@ export const agentTools: MCPTool[] = [
   },
   {
     name: 'agent_status',
-    description: 'Get agent status',
+    description: 'Read the lifecycle state of a single tracked agent: idle/running/stopped, current taskCount, lastResult, model, health score. Use when native Task tool is wrong because you need agent-level state (status across turns, accumulated taskCount, last error, swarm coordination) rather than a one-shot response. For inspecting a Task you just ran, native Task output is fine. Pair with agent_list to find the agentId first.',
     category: 'agent',
     inputSchema: {
       type: 'object',
@@ -302,9 +398,11 @@ export const agentTools: MCPTool[] = [
       required: ['agentId'],
     },
     handler: async (input) => {
-      const store = loadAgentStore();
+      const v = validateIdentifier(input.agentId, 'agentId');
+      if (!v.valid) return { agentId: input.agentId, status: 'not_found', error: `Input validation failed: ${v.error}` };
+
       const agentId = input.agentId as string;
-      const agent = store.agents[agentId];
+      const agent = loadAllAgents()[agentId]; // #1916: includes hive-mind-spawned workers
 
       if (agent) {
         return {
@@ -315,6 +413,7 @@ export const agentTools: MCPTool[] = [
           taskCount: agent.taskCount,
           createdAt: agent.createdAt,
           domain: agent.domain,
+          lastResult: agent.lastResult || null,
         };
       }
 
@@ -327,7 +426,7 @@ export const agentTools: MCPTool[] = [
   },
   {
     name: 'agent_list',
-    description: 'List all agents',
+    description: 'List every Ruflo-tracked agent in the registry with its type, model, status, and taskCount. Use when native Task tool is wrong because you need to see the swarm-wide agent inventory across turns (which agents exist, their roles, their cost-tracking handles) rather than spawn a new one-shot Task. Filter by status/domain/agentType if needed. For starting a fresh single-shot subagent, native Task is fine.',
     category: 'agent',
     inputSchema: {
       type: 'object',
@@ -338,8 +437,16 @@ export const agentTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const store = loadAgentStore();
-      let agents = Object.values(store.agents);
+      if (input.status) {
+        const v = validateIdentifier(input.status, 'status');
+        if (!v.valid) return { agents: [], total: 0, error: `Input validation failed: ${v.error}` };
+      }
+      if (input.domain) {
+        const v = validateIdentifier(input.domain, 'domain');
+        if (!v.valid) return { agents: [], total: 0, error: `Input validation failed: ${v.error}` };
+      }
+
+      let agents = Object.values(loadAllAgents()); // #1916: includes hive-mind-spawned workers
 
       // Filter by status
       if (input.status) {
@@ -374,7 +481,7 @@ export const agentTools: MCPTool[] = [
   },
   {
     name: 'agent_pool',
-    description: 'Manage agent pool',
+    description: 'Manage a fixed-size warm pool of pre-spawned agents to skip cold-start cost on bursty workloads. Use when native Task is wrong because (a) you have a queue of similar tasks and want to amortize spawn latency, (b) cost-tracking wants stable agentIds across requests, or (c) swarm topology requires a known agent count at all times. For one-shot work, just call agent_spawn or native Task. Pool sizes and warm/idle thresholds are set per-pool.',
     category: 'agent',
     inputSchema: {
       type: 'object',
@@ -386,6 +493,11 @@ export const agentTools: MCPTool[] = [
       required: ['action'],
     },
     handler: async (input) => {
+      if (input.agentType) {
+        const v = validateIdentifier(input.agentType, 'agentType');
+        if (!v.valid) return { action: input.action, error: `Input validation failed: ${v.error}` };
+      }
+
       const store = loadAgentStore();
       const agents = Object.values(store.agents).filter(a => a.status !== 'terminated');
       const action = (input.action as string) || 'status';  // Default to status
@@ -491,7 +603,7 @@ export const agentTools: MCPTool[] = [
   },
   {
     name: 'agent_health',
-    description: 'Check agent health',
+    description: 'Compute an agent\'s rolling health score (0-1) from recent task success ratio + response-latency p50/p95 + error rate. Use when native Task tool is wrong because you\'re running a long-lived agent (autonomous loop / hive-mind worker / federation peer) and need to detect degradation before the breaker trips it. For one-shot Task invocations there is no history to score. Pair with hooks_post-task so the scores stay current.',
     category: 'agent',
     inputSchema: {
       type: 'object',
@@ -501,6 +613,11 @@ export const agentTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
+      if (input.agentId) {
+        const v = validateIdentifier(input.agentId, 'agentId');
+        if (!v.valid) return { agentId: input.agentId, error: `Input validation failed: ${v.error}` };
+      }
+
       const store = loadAgentStore();
       const agents = Object.values(store.agents).filter(a => a.status !== 'terminated');
       const threshold = (input.threshold as number) || 0.5;
@@ -524,8 +641,6 @@ export const agentTools: MCPTool[] = [
       const degradedAgents = agents.filter(a => a.health >= 0.3 && a.health < threshold);
       const unhealthyAgents = agents.filter(a => a.health < 0.3);
       const avgHealth = agents.length > 0 ? agents.reduce((sum, a) => sum + a.health, 0) / agents.length : 1;
-      const avgCpu = agents.length > 0 ? 35 + Math.random() * 30 : 0; // Simulated CPU
-      const avgMemory = avgHealth * 0.6; // Correlated with health
 
       return {
         // CLI expected fields
@@ -536,19 +651,17 @@ export const agentTools: MCPTool[] = [
             type: a.agentType,
             health: a.health >= threshold ? 'healthy' : (a.health >= 0.3 ? 'degraded' : 'unhealthy'),
             uptime,
-            memory: { used: Math.floor(256 * (1 - a.health * 0.3)), limit: 512 },
-            cpu: 20 + Math.floor(a.health * 40),
             tasks: { active: a.taskCount > 0 ? 1 : 0, queued: 0, completed: a.taskCount, failed: 0 },
-            latency: { avg: 50 + Math.floor((1 - a.health) * 100), p99: 150 + Math.floor((1 - a.health) * 200) },
-            errors: { count: a.health < threshold ? 1 : 0 },
+            _note: 'Per-agent OS metrics not available — use system_metrics for real CPU/memory',
           };
         }),
         overall: {
           healthy: healthyAgents.length,
           degraded: degradedAgents.length,
           unhealthy: unhealthyAgents.length,
-          avgCpu,
-          avgMemory,
+          cpu: null,
+          memory: null,
+          _note: 'Per-agent CPU/memory not available — use system_metrics for real OS-level stats',
           score: Math.round(avgHealth * 100),
           issues: unhealthyAgents.length,
         },
@@ -568,7 +681,7 @@ export const agentTools: MCPTool[] = [
   },
   {
     name: 'agent_update',
-    description: 'Update agent status or config',
+    description: 'Mutate a tracked agent\'s config (model, instructions, status, health) without re-spawning. Use when native Task tool is wrong because the agent already has accumulated state (taskCount, swarm membership, cost-tracking attribution) and you only need to tweak one field — for example, promoting an idle agent to running on a new task, or rotating its model from haiku to sonnet mid-loop. For a brand-new subagent, agent_spawn (or native Task) is the right call.',
     category: 'agent',
     inputSchema: {
       type: 'object',
@@ -582,6 +695,13 @@ export const agentTools: MCPTool[] = [
       required: ['agentId'],
     },
     handler: async (input) => {
+      const v = validateIdentifier(input.agentId, 'agentId');
+      if (!v.valid) return { success: false, agentId: input.agentId, error: `Input validation failed: ${v.error}` };
+      if (input.status) {
+        const vs = validateIdentifier(input.status, 'status');
+        if (!vs.valid) return { success: false, agentId: input.agentId, error: `Input validation failed: ${vs.error}` };
+      }
+
       const store = loadAgentStore();
       const agentId = input.agentId as string;
       const agent = store.agents[agentId];
@@ -612,6 +732,55 @@ export const agentTools: MCPTool[] = [
         success: false,
         agentId,
         error: 'Agent not found',
+      };
+    },
+  },
+  {
+    // #1916 — the `ruflo agent logs <id>` CLI subcommand and the guidance
+    // surface both reference an `agent_logs` MCP tool that was never
+    // registered, so it errored with `MCP tool not found: agent_logs`.
+    // This is the registered handler. Note: agents don't yet keep a
+    // structured per-agent activity log (that lands with hive worker
+    // execution wiring — see #1916), so for now we surface the agent's
+    // last task result as a single synthetic entry, or an explicit empty
+    // response. The shape matches what the CLI `logs` subcommand expects:
+    // `{ agentId, entries: [{timestamp,level,message,context?}], total }`.
+    name: 'agent_logs',
+    description: 'Return recorded activity-log entries for a tracked agent (idle/running history, last task result). Use when native Task tool is wrong because you need the agent\'s log across turns (what it did, last error/result, swarm context) rather than a one-shot Task transcript. For a Task you just ran, native Task output is fine. Pair with agent_list to find the agentId. (Hive-mind-spawned workers are resolved here too.) Today this returns the last task result as a synthetic entry — full per-agent activity logs land with hive worker execution wiring (ruvnet/ruflo#1916).',
+    category: 'agent',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        agentId: { type: 'string', description: 'ID of agent' },
+        tail: { type: 'number', description: 'Max recent entries to return (default 50)' },
+        level: { type: 'string', enum: ['debug', 'info', 'warn', 'error'], description: 'Minimum log level (currently advisory — entries are synthetic)' },
+        since: { type: 'string', description: 'Show logs since, e.g. "1h" / "30m" (currently advisory)' },
+      },
+      required: ['agentId'],
+    },
+    handler: async (input) => {
+      const v = validateIdentifier(input.agentId, 'agentId');
+      if (!v.valid) return { agentId: input.agentId, entries: [], total: 0, error: `Input validation failed: ${v.error}` };
+
+      const agentId = input.agentId as string;
+      const agent = loadAllAgents()[agentId]; // #1916: includes hive-mind-spawned workers
+      if (!agent) {
+        return { agentId, entries: [], total: 0, error: 'Agent not found' };
+      }
+
+      const entries: Array<{ timestamp: string; level: 'debug' | 'info' | 'warn' | 'error'; message: string; context?: Record<string, unknown> }> = [];
+      entries.push({ timestamp: agent.createdAt, level: 'info', message: `agent created (type=${agent.agentType}, status=${agent.status})` });
+      if (agent.lastResult) {
+        entries.push({ timestamp: agent.createdAt, level: 'info', message: 'last task result', context: agent.lastResult });
+      }
+
+      const tail = typeof input.tail === 'number' && input.tail > 0 ? Math.floor(input.tail) : 50;
+      const sliced = entries.slice(-tail);
+      return {
+        agentId: agent.agentId,
+        entries: sliced,
+        total: entries.length,
+        note: 'per-agent activity logging is not yet wired; entries are synthetic (ruvnet/ruflo#1916)',
       };
     },
   },

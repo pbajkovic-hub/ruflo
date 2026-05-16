@@ -4,6 +4,7 @@
  */
 
 import type { MCPTool } from './types.js';
+import { validateGitRef, validatePath } from './validate-input.js';
 import {
   analyzeDiff,
   assessFileRisk,
@@ -21,7 +22,7 @@ import {
  */
 export const analyzeDiffTool: MCPTool = {
   name: 'analyze_diff',
-  description: 'Analyze git diff for change risk assessment and classification',
+  description: 'Analyze git diff for change risk assessment and classification Use when native `git diff` / `grep` / static analysis is wrong because you want LLM-graded change classification, reviewer recommendations, or risk scoring. For literal-text inspection, native tools are fine.',
   category: 'analyze',
   tags: ['diff', 'risk', 'classification', 'git'],
   inputSchema: {
@@ -50,6 +51,7 @@ export const analyzeDiffTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
     const includeFileRisks = params.includeFileRisks !== false;
     const includeReviewers = params.includeReviewers !== false;
@@ -96,7 +98,7 @@ export const analyzeDiffTool: MCPTool = {
  */
 export const diffRiskTool: MCPTool = {
   name: 'analyze_diff-risk',
-  description: 'Quick risk assessment for git diff',
+  description: 'Quick risk assessment for git diff Use when native `git diff` / `grep` / static analysis is wrong because you want LLM-graded change classification, reviewer recommendations, or risk scoring. For literal-text inspection, native tools are fine.',
   category: 'analyze',
   tags: ['diff', 'risk', 'git'],
   inputSchema: {
@@ -110,6 +112,7 @@ export const diffRiskTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
 
     try {
@@ -138,7 +141,7 @@ export const diffRiskTool: MCPTool = {
  */
 export const diffClassifyTool: MCPTool = {
   name: 'analyze_diff-classify',
-  description: 'Classify git diff change type',
+  description: 'Classify git diff change type Use when native `git diff` / `grep` / static analysis is wrong because you want LLM-graded change classification, reviewer recommendations, or risk scoring. For literal-text inspection, native tools are fine.',
   category: 'analyze',
   tags: ['diff', 'classification', 'git'],
   inputSchema: {
@@ -152,6 +155,7 @@ export const diffClassifyTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
 
     try {
@@ -179,7 +183,7 @@ export const diffClassifyTool: MCPTool = {
  */
 export const diffReviewersTool: MCPTool = {
   name: 'analyze_diff-reviewers',
-  description: 'Suggest reviewers for git diff changes',
+  description: 'Suggest reviewers for git diff changes Use when native `git diff` / `grep` / static analysis is wrong because you want LLM-graded change classification, reviewer recommendations, or risk scoring. For literal-text inspection, native tools are fine.',
   category: 'analyze',
   tags: ['diff', 'reviewers', 'git'],
   inputSchema: {
@@ -198,6 +202,7 @@ export const diffReviewersTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
     const limit = (params.limit as number) || 5;
 
@@ -227,7 +232,7 @@ export const diffReviewersTool: MCPTool = {
  */
 export const fileRiskTool: MCPTool = {
   name: 'analyze_file-risk',
-  description: 'Assess risk for a specific file change',
+  description: 'Assess risk for a specific file change Use when native `git diff` / `grep` / static analysis is wrong because you want LLM-graded change classification, reviewer recommendations, or risk scoring. For literal-text inspection, native tools are fine.',
   category: 'analyze',
   tags: ['file', 'risk'],
   inputSchema: {
@@ -256,6 +261,8 @@ export const fileRiskTool: MCPTool = {
     required: ['path'],
   },
   handler: async (params: Record<string, unknown>) => {
+    const vPath = validatePath(params.path, 'path');
+    if (!vPath.valid) return { file: params.path, risk: 'unknown', score: 0, reasons: [vPath.error] };
     const file: DiffFile = {
       path: params.path as string,
       status: (params.status as DiffFile['status']) || 'modified',
@@ -282,7 +289,7 @@ export const fileRiskTool: MCPTool = {
  */
 export const diffStatsTool: MCPTool = {
   name: 'analyze_diff-stats',
-  description: 'Get quick statistics for git diff',
+  description: 'Get quick statistics for git diff Use when native `git diff` / `grep` / static analysis is wrong because you want LLM-graded change classification, reviewer recommendations, or risk scoring. For literal-text inspection, native tools are fine.',
   category: 'analyze',
   tags: ['diff', 'stats', 'git'],
   inputSchema: {
@@ -296,6 +303,7 @@ export const diffStatsTool: MCPTool = {
     },
   },
   handler: async (params: Record<string, unknown>) => {
+    if (params.ref) { const vRef = validateGitRef(params.ref, 'ref'); if (!vRef.valid) return { error: true, message: vRef.error, ref: params.ref }; }
     const ref = (params.ref as string) || 'HEAD';
 
     try {

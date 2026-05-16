@@ -6,6 +6,7 @@
  */
 
 import type { MCPTool } from './types.js';
+import { validateIdentifier, validateText } from './validate-input.js';
 
 async function loadAgentWasm() {
   const mod = await import('../ruvector/agent-wasm.js');
@@ -15,17 +16,20 @@ async function loadAgentWasm() {
 export const wasmAgentTools: MCPTool[] = [
   {
     name: 'wasm_agent_create',
-    description: 'Create a sandboxed WASM agent with virtual filesystem (no OS access). Optionally use a gallery template.',
+    description: 'Create a sandboxed WASM agent with virtual filesystem (no OS access). Optionally use a gallery template. Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         template: { type: 'string', description: 'Gallery template name (coder, researcher, tester, reviewer, security, swarm)' },
-        model: { type: 'string', description: 'Model identifier (default: anthropic:claude-sonnet-4-20250514)' },
+        model: { type: 'string', description: 'Model identifier (default: anthropic:claude-sonnet-4-6)' },
         instructions: { type: 'string', description: 'System instructions for the agent' },
         maxTurns: { type: 'number', description: 'Max conversation turns (default: 50)' },
       },
     },
     handler: async (args: Record<string, unknown>) => {
+      if (args.template) { const v = validateIdentifier(args.template, 'template'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      if (args.model) { const v = validateIdentifier(args.model, 'model'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      if (args.instructions) { const v = validateText(args.instructions, 'instructions'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const wasm = await loadAgentWasm();
         if (args.template) {
@@ -45,7 +49,7 @@ export const wasmAgentTools: MCPTool[] = [
   },
   {
     name: 'wasm_agent_prompt',
-    description: 'Send a prompt to a WASM agent and get a response.',
+    description: 'Send a prompt to a WASM agent and get a response. Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -55,6 +59,8 @@ export const wasmAgentTools: MCPTool[] = [
       required: ['agentId', 'input'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      { const v = validateText(args.input, 'input'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const wasm = await loadAgentWasm();
         const result = await wasm.promptWasmAgent(args.agentId as string, args.input as string);
@@ -66,7 +72,7 @@ export const wasmAgentTools: MCPTool[] = [
   },
   {
     name: 'wasm_agent_tool',
-    description: 'Execute a tool on a WASM agent sandbox. Tools: read_file, write_file, edit_file, write_todos, list_files. Use flat format: {tool, path, content, ...}.',
+    description: 'Execute a tool on a WASM agent sandbox. Tools: read_file, write_file, edit_file, write_todos, list_files. Use flat format: {tool, path, content, ...}. Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -77,6 +83,8 @@ export const wasmAgentTools: MCPTool[] = [
       required: ['agentId', 'toolName'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
+      { const v = validateIdentifier(args.toolName, 'toolName'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const wasm = await loadAgentWasm();
         // Flat format: {tool: 'write_file', path: '...', content: '...'}
@@ -93,7 +101,7 @@ export const wasmAgentTools: MCPTool[] = [
   },
   {
     name: 'wasm_agent_list',
-    description: 'List all active WASM agents.',
+    description: 'List all active WASM agents. Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: { type: 'object' as const, properties: {} },
     handler: async () => {
       try {
@@ -107,7 +115,7 @@ export const wasmAgentTools: MCPTool[] = [
   },
   {
     name: 'wasm_agent_terminate',
-    description: 'Terminate a WASM agent and free resources.',
+    description: 'Terminate a WASM agent and free resources. Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -116,6 +124,7 @@ export const wasmAgentTools: MCPTool[] = [
       required: ['agentId'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const wasm = await loadAgentWasm();
         const ok = wasm.terminateWasmAgent(args.agentId as string);
@@ -127,7 +136,7 @@ export const wasmAgentTools: MCPTool[] = [
   },
   {
     name: 'wasm_agent_files',
-    description: 'Get a WASM agent\'s available tools and info.',
+    description: 'Get a WASM agent\'s available tools and info. Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -136,6 +145,7 @@ export const wasmAgentTools: MCPTool[] = [
       required: ['agentId'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const wasm = await loadAgentWasm();
         const tools = wasm.getWasmAgentTools(args.agentId as string);
@@ -148,7 +158,7 @@ export const wasmAgentTools: MCPTool[] = [
   },
   {
     name: 'wasm_agent_export',
-    description: 'Export a WASM agent\'s full state (config, filesystem, conversation) as JSON.',
+    description: 'Export a WASM agent\'s full state (config, filesystem, conversation) as JSON. Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -157,6 +167,7 @@ export const wasmAgentTools: MCPTool[] = [
       required: ['agentId'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.agentId, 'agentId'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const wasm = await loadAgentWasm();
         const state = wasm.exportWasmState(args.agentId as string);
@@ -168,7 +179,7 @@ export const wasmAgentTools: MCPTool[] = [
   },
   {
     name: 'wasm_gallery_list',
-    description: 'List all available WASM agent gallery templates (Coder, Researcher, Tester, Reviewer, Security, Swarm).',
+    description: 'List all available WASM agent gallery templates (Coder, Researcher, Tester, Reviewer, Security, Swarm). Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: { type: 'object' as const, properties: {} },
     handler: async () => {
       try {
@@ -182,7 +193,7 @@ export const wasmAgentTools: MCPTool[] = [
   },
   {
     name: 'wasm_gallery_search',
-    description: 'Search WASM agent gallery templates by query.',
+    description: 'Search WASM agent gallery templates by query. Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -191,6 +202,7 @@ export const wasmAgentTools: MCPTool[] = [
       required: ['query'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateText(args.query, 'query'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const wasm = await loadAgentWasm();
         const results = await wasm.searchGalleryTemplates(args.query as string);
@@ -202,7 +214,7 @@ export const wasmAgentTools: MCPTool[] = [
   },
   {
     name: 'wasm_gallery_create',
-    description: 'Create a WASM agent from a gallery template.',
+    description: 'Create a WASM agent from a gallery template. Use when native Task is wrong because the workload needs sandboxed isolation — untrusted code execution, browser-side run, deterministic replay. Pair with wasm_gallery_search to find a published agent, or wasm_agent_create to scaffold a fresh one. For trusted in-process work, native Task is fine.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -211,6 +223,7 @@ export const wasmAgentTools: MCPTool[] = [
       required: ['template'],
     },
     handler: async (args: Record<string, unknown>) => {
+      { const v = validateIdentifier(args.template, 'template'); if (!v.valid) return { content: [{ type: 'text', text: JSON.stringify({ error: v.error }) }], isError: true }; }
       try {
         const wasm = await loadAgentWasm();
         const info = await wasm.createAgentFromTemplate(args.template as string);

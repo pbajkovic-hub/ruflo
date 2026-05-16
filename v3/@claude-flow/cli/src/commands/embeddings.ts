@@ -169,69 +169,97 @@ const searchCommand: Command = {
       const queryEmbedding = queryResult.embedding;
 
       // Get all entries with embeddings from database
-      const entries = db.exec(`
-        SELECT id, key, namespace, content, embedding, embedding_dimensions
-        FROM memory_entries
-        WHERE status = 'active'
-          AND embedding IS NOT NULL
-          ${namespace !== 'all' ? `AND namespace = '${namespace}'` : ''}
-        LIMIT 1000
-      `);
+      // Parameterized query to prevent SQL injection (CRIT-01)
+      const embeddingSql = namespace !== 'all'
+        ? `SELECT id, key, namespace, content, embedding, embedding_dimensions
+           FROM memory_entries
+           WHERE status = 'active' AND embedding IS NOT NULL AND namespace = ?
+           LIMIT 1000`
+        : `SELECT id, key, namespace, content, embedding, embedding_dimensions
+           FROM memory_entries
+           WHERE status = 'active' AND embedding IS NOT NULL
+           LIMIT 1000`;
+
+      const embeddingStmt = db.prepare(embeddingSql);
+      if (namespace !== 'all') {
+        embeddingStmt.bind([namespace]);
+      }
+
+      const entryRows: any[][] = [];
+      while (embeddingStmt.step()) {
+        entryRows.push(embeddingStmt.get());
+      }
+      embeddingStmt.free();
 
       const results: { score: number; id: string; key: string; content: string; namespace: string }[] = [];
 
-      if (entries[0]?.values) {
-        for (const row of entries[0].values) {
-          const [id, key, ns, content, embeddingJson] = row as [string, string, string, string, string];
+      for (const row of entryRows) {
+        const [id, key, ns, content, embeddingJson] = row as [string, string, string, string, string];
 
-          if (!embeddingJson) continue;
+        if (!embeddingJson) continue;
 
-          try {
-            const embedding = JSON.parse(embeddingJson) as number[];
+        try {
+          const embedding = JSON.parse(embeddingJson) as number[];
 
-            // Calculate cosine similarity
-            const similarity = cosineSimilarity(queryEmbedding, embedding);
+          // Calculate cosine similarity
+          const similarity = cosineSimilarity(queryEmbedding, embedding);
 
-            if (similarity >= threshold) {
-              results.push({
-                score: similarity,
-                id: id.substring(0, 10),
-                key: key || id.substring(0, 15),
-                content: (content || '').substring(0, 45) + ((content || '').length > 45 ? '...' : ''),
-                namespace: ns || 'default'
-              });
-            }
-          } catch {
-            // Skip entries with invalid embeddings
+          if (similarity >= threshold) {
+            results.push({
+              score: similarity,
+              id: id.substring(0, 10),
+              key: key || id.substring(0, 15),
+              content: (content || '').substring(0, 45) + ((content || '').length > 45 ? '...' : ''),
+              namespace: ns || 'default'
+            });
           }
+        } catch {
+          // Skip entries with invalid embeddings
         }
       }
 
-      // Also search entries without embeddings using keyword match
+      // Keyword search fallback with parameterized query (CRIT-01)
       if (results.length < limit) {
-        const keywordEntries = db.exec(`
-          SELECT id, key, namespace, content
-          FROM memory_entries
-          WHERE status = 'active'
-            AND (content LIKE '%${query.replace(/'/g, "''")}%' OR key LIKE '%${query.replace(/'/g, "''")}%')
-            ${namespace !== 'all' ? `AND namespace = '${namespace}'` : ''}
-          LIMIT ${limit - results.length}
-        `);
+        const likePattern = `%${query}%`;
+        const remainingLimit = Math.max(0, limit - results.length);
+        const keywordSql = namespace !== 'all'
+          ? `SELECT id, key, namespace, content
+             FROM memory_entries
+             WHERE status = 'active'
+               AND (content LIKE ? OR key LIKE ?)
+               AND namespace = ?
+             LIMIT ?`
+          : `SELECT id, key, namespace, content
+             FROM memory_entries
+             WHERE status = 'active'
+               AND (content LIKE ? OR key LIKE ?)
+             LIMIT ?`;
 
-        if (keywordEntries[0]?.values) {
-          for (const row of keywordEntries[0].values) {
-            const [id, key, ns, content] = row as [string, string, string, string];
+        const keywordStmt = db.prepare(keywordSql);
+        if (namespace !== 'all') {
+          keywordStmt.bind([likePattern, likePattern, namespace, remainingLimit]);
+        } else {
+          keywordStmt.bind([likePattern, likePattern, remainingLimit]);
+        }
 
-            // Avoid duplicates
-            if (!results.some(r => r.id === id.substring(0, 10))) {
-              results.push({
-                score: 0.5, // Keyword match base score
-                id: id.substring(0, 10),
-                key: key || id.substring(0, 15),
-                content: (content || '').substring(0, 45) + ((content || '').length > 45 ? '...' : ''),
-                namespace: ns || 'default'
-              });
-            }
+        const keywordRows: any[][] = [];
+        while (keywordStmt.step()) {
+          keywordRows.push(keywordStmt.get());
+        }
+        keywordStmt.free();
+
+        for (const row of keywordRows) {
+          const [id, key, ns, content] = row as [string, string, string, string];
+
+          // Avoid duplicates
+          if (!results.some(r => r.id === id.substring(0, 10))) {
+            results.push({
+              score: 0.5, // Keyword match base score
+              id: id.substring(0, 10),
+              key: key || id.substring(0, 15),
+              content: (content || '').substring(0, 45) + ((content || '').length > 45 ? '...' : ''),
+              namespace: ns || 'default'
+            });
           }
         }
       }
@@ -522,14 +550,14 @@ const indexCommand: Command = {
   description: 'Manage HNSW indexes',
   options: [
     { name: 'action', short: 'a', type: 'string', description: 'Action: build, rebuild, status, optimize', default: 'status' },
-    { name: 'collection', short: 'c', type: 'string', description: 'Collection/namespace name' },
+    { name: 'collection', short: 'c', type: 'string', description: 'Collection/namespace label (informational; HNSW is a single global index across all namespaces). Omit to build for all namespaces (#1947 RC2).' },
     { name: 'ef-construction', type: 'number', description: 'HNSW ef_construction parameter', default: '200' },
     { name: 'm', type: 'number', description: 'HNSW M parameter', default: '16' },
   ],
   examples: [
     { command: 'claude-flow embeddings index', description: 'Show index status' },
-    { command: 'claude-flow embeddings index -a build -c documents', description: 'Build index' },
-    { command: 'claude-flow embeddings index -a optimize -c patterns', description: 'Optimize index' },
+    { command: 'claude-flow embeddings index -a build', description: 'Build index from all namespaces' },
+    { command: 'claude-flow embeddings index -a rebuild -c project', description: 'Rebuild (label as `project`)' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
     const action = ctx.flags.action as string || 'status';
@@ -543,6 +571,15 @@ const indexCommand: Command = {
 
     try {
       const { getHNSWStatus, getHNSWIndex, searchHNSWIndex, generateEmbedding } = await import('../memory/memory-initializer.js');
+
+      // Trigger lazy initialization before reading status, otherwise the
+      // singleton stays null and produces a misleading "@ruvector/core not
+      // available" warning even when the package is present (#1698).
+      await getHNSWIndex().catch(() => null);
+
+      // Probe whether @ruvector/core is loadable so we can distinguish
+      // "package missing" from "package present but index empty".
+      const ruvectorAvailable = await import('@ruvector/core').then(() => true).catch(() => false);
 
       // Get real HNSW status
       const status = getHNSWStatus();
@@ -587,10 +624,15 @@ const indexCommand: Command = {
             `  Speedup: ~${Math.round(speedup)}x`,
             `  Results: ${results?.length || 0} matches`,
           ].join('\n'), 'Search Performance');
-        } else if (!status.available) {
+        } else if (!status.available && !ruvectorAvailable) {
           output.writeln();
           output.printWarning('@ruvector/core not available');
           output.printInfo('Install: npm install @ruvector/core');
+        } else if (!status.available) {
+          output.writeln();
+          output.printWarning('HNSW index not initialized (but @ruvector/core is installed)');
+          output.printInfo('This usually means no embeddings have been stored yet.');
+          output.printInfo('Run: claude-flow memory store -k "key" --value "text"');
         } else {
           output.writeln();
           output.printInfo('Index is empty. Store some entries to populate it.');
@@ -602,12 +644,16 @@ const indexCommand: Command = {
 
       // Build/Rebuild action
       if (action === 'build' || action === 'rebuild') {
-        if (!collection) {
-          output.printError('Collection is required for build/rebuild');
-          return { success: false, exitCode: 1 };
-        }
+        // #1947 RC #2: `-c` is informational — the HNSW index is global
+        // and indexes every namespace's embeddings in one structure. The
+        // earlier code REQUIRED `-c` for build/rebuild AND its examples
+        // suggested `-c default`, which silently produced 0 vectors when a
+        // user's entries lived under a different namespace (e.g. `project`,
+        // `claude-memories`). Treat omitted `-c` as "all namespaces"
+        // (the actual runtime behavior) and tell the user as much.
+        const label = collection ?? '(all namespaces)';
 
-        const spinner = output.createSpinner({ text: `${action}ing index for ${collection}...`, spinner: 'dots' });
+        const spinner = output.createSpinner({ text: `${action}ing index for ${label}...`, spinner: 'dots' });
         spinner.start();
 
         // Force rebuild if requested
@@ -624,13 +670,19 @@ const indexCommand: Command = {
         const newStatus = getHNSWStatus();
         output.writeln();
         output.printBox([
-          `Collection: ${collection}`,
+          `Collection: ${label}`,
           `Action: ${action}`,
           `Vectors: ${newStatus.entryCount}`,
           `Dimensions: ${newStatus.dimensions}`,
           `M: ${m}`,
           `ef_construction: ${efConstruction}`,
         ].join('\n'), 'Index Built');
+
+        if (!collection && newStatus.entryCount === 0) {
+          output.writeln();
+          output.printInfo('No vectors indexed. Store some entries first:');
+          output.printInfo('  claude-flow memory store -k "key" --value "text" --namespace <ns>');
+        }
 
         return { success: true, data: newStatus };
       }
@@ -656,7 +708,7 @@ const initCommand: Command = {
   name: 'init',
   description: 'Initialize embedding subsystem with ONNX model and hyperbolic config',
   options: [
-    { name: 'model', short: 'm', type: 'string', description: 'ONNX model ID', default: 'all-MiniLM-L6-v2' },
+    { name: 'model', short: 'm', type: 'string', description: 'ONNX model ID', default: 'Xenova/all-MiniLM-L6-v2' },
     { name: 'hyperbolic', type: 'boolean', description: 'Enable hyperbolic (Poincaré ball) embeddings', default: 'true' },
     { name: 'curvature', short: 'c', type: 'string', description: 'Poincaré ball curvature (use --curvature=-1 for negative)', default: '-1' },
     { name: 'download', short: 'd', type: 'boolean', description: 'Download model during init', default: 'true' },
@@ -665,13 +717,13 @@ const initCommand: Command = {
   ],
   examples: [
     { command: 'claude-flow embeddings init', description: 'Initialize with defaults' },
-    { command: 'claude-flow embeddings init --model all-mpnet-base-v2', description: 'Use higher quality model' },
+    { command: 'claude-flow embeddings init --model Xenova/all-mpnet-base-v2', description: 'Use higher quality model' },
     { command: 'claude-flow embeddings init --no-hyperbolic', description: 'Euclidean only' },
     { command: 'claude-flow embeddings init --curvature=-0.5', description: 'Custom curvature (use = for negative)' },
     { command: 'claude-flow embeddings init --force', description: 'Overwrite existing config' },
   ],
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    const model = ctx.flags.model as string || 'all-MiniLM-L6-v2';
+    const model = ctx.flags.model as string || 'Xenova/all-MiniLM-L6-v2';
     const hyperbolic = ctx.flags.hyperbolic !== false;
     const download = ctx.flags.download !== false;
     const force = ctx.flags.force === true;
@@ -726,9 +778,9 @@ const initCommand: Command = {
             spinner.setText(`Downloading ${model}... ${p.percent.toFixed(0)}%`);
           });
         } else {
-          // Simulate download for when embeddings package not available
+          // Embeddings package not available — skip download
           await new Promise(r => setTimeout(r, 500));
-          output.writeln(output.dim('  (Simulated - @claude-flow/embeddings not installed)'));
+          output.writeln(output.dim('  (Skipped — @claude-flow/embeddings not installed)'));
         }
       }
 
@@ -827,7 +879,7 @@ const providersCommand: Command = {
       data: [
         { provider: 'OpenAI', model: 'text-embedding-3-small', dims: '1536', type: 'Cloud', status: output.success('Ready') },
         { provider: 'OpenAI', model: 'text-embedding-3-large', dims: '3072', type: 'Cloud', status: output.success('Ready') },
-        { provider: 'Transformers.js', model: 'all-MiniLM-L6-v2', dims: '384', type: 'Local', status: output.success('Ready') },
+        { provider: 'Transformers.js', model: 'Xenova/all-MiniLM-L6-v2', dims: '384', type: 'Local', status: output.success('Ready') },
         { provider: 'Agentic Flow', model: 'ONNX optimized', dims: '384', type: 'Local', status: output.success('Ready') },
         { provider: 'Mock', model: 'mock-embedding', dims: '384', type: 'Dev', status: output.dim('Dev only') },
       ],
@@ -1010,7 +1062,7 @@ const hyperbolicCommand: Command = {
         case 'convert': {
           const vec = Array.isArray(input[0]) ? input[0] as number[] : input as number[];
           const rawResult = hyperbolic.euclideanToPoincare(vec, { curvature });
-          const result = Array.from(rawResult);
+          const result = Array.from(rawResult) as number[];
           output.writeln(output.success('Euclidean → Poincaré conversion:'));
           output.writeln();
           output.writeln(`Input (Euclidean):  [${vec.slice(0, 6).map(v => v.toFixed(4)).join(', ')}${vec.length > 6 ? ', ...' : ''}]`);
@@ -1042,7 +1094,7 @@ const hyperbolicCommand: Command = {
           }
           const vectors = input as number[][];
           const rawCentroid = hyperbolic.hyperbolicCentroid(vectors, { curvature });
-          const centroid = Array.from(rawCentroid);
+          const centroid = Array.from(rawCentroid) as number[];
           output.writeln(output.success('Hyperbolic centroid (Fréchet mean):'));
           output.writeln();
           output.writeln(`Input vectors: ${vectors.length}`);
@@ -1258,16 +1310,16 @@ const modelsCommand: Command = {
         }
       } else {
         await new Promise(r => setTimeout(r, 500));
-        spinner.succeed(`Download complete (simulated)`);
+        spinner.succeed(`Download skipped — @claude-flow/embeddings not installed`);
       }
       return { success: true };
     }
 
     // List models
     let models = [
-      { id: 'all-MiniLM-L6-v2', dimension: 384, size: '23MB', quantized: false, downloaded: true },
-      { id: 'all-mpnet-base-v2', dimension: 768, size: '110MB', quantized: false, downloaded: false },
-      { id: 'paraphrase-MiniLM-L3-v2', dimension: 384, size: '17MB', quantized: false, downloaded: false },
+      { id: 'Xenova/all-MiniLM-L6-v2', dimension: 384, size: '23MB', quantized: false, downloaded: true },
+      { id: 'Xenova/all-mpnet-base-v2', dimension: 768, size: '110MB', quantized: false, downloaded: false },
+      { id: 'Xenova/paraphrase-MiniLM-L3-v2', dimension: 384, size: '17MB', quantized: false, downloaded: false },
     ];
 
     if (embeddings) {

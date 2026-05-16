@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, resolve } from 'path';
 import type { MCPTool } from './types.js';
+import { validateIdentifier, validateText } from './validate-input.js';
 
 // Configuration paths
 const CONFIG_DIR = '.claude-flow';
@@ -156,7 +157,7 @@ function cosineSimilarity(a: number[], b: number[]): number {
 export const embeddingsTools: MCPTool[] = [
   {
     name: 'embeddings_init',
-    description: 'Initialize the ONNX embedding subsystem with hyperbolic support',
+    description: 'Initialize the ONNX embedding subsystem with hyperbolic support Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
     category: 'embeddings',
     inputSchema: {
       type: 'object',
@@ -164,8 +165,8 @@ export const embeddingsTools: MCPTool[] = [
         model: {
           type: 'string',
           description: 'ONNX model ID',
-          enum: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
-          default: 'all-MiniLM-L6-v2',
+          enum: ['Xenova/all-MiniLM-L6-v2', 'Xenova/all-mpnet-base-v2'],
+          default: 'Xenova/all-MiniLM-L6-v2',
         },
         hyperbolic: {
           type: 'boolean',
@@ -190,7 +191,7 @@ export const embeddingsTools: MCPTool[] = [
       },
     },
     handler: async (input) => {
-      const model = (input.model as string) || 'all-MiniLM-L6-v2';
+      const model = (input.model as string) || 'Xenova/all-MiniLM-L6-v2';
       const hyperbolic = input.hyperbolic !== false;
       const curvature = (input.curvature as number) || -1;
       const cacheSize = (input.cacheSize as number) || 256;
@@ -257,7 +258,7 @@ export const embeddingsTools: MCPTool[] = [
 
   {
     name: 'embeddings_generate',
-    description: 'Generate embeddings for text (Euclidean or hyperbolic)',
+    description: 'Generate embeddings for text (Euclidean or hyperbolic) Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
     category: 'embeddings',
     inputSchema: {
       type: 'object',
@@ -289,6 +290,9 @@ export const embeddingsTools: MCPTool[] = [
       }
 
       const text = input.text as string;
+
+      { const v = validateText(text, 'text'); if (!v.valid) return { success: false, error: v.error }; }
+
       const useHyperbolic = input.hyperbolic === true && config.hyperbolic.enabled;
 
       // Generate real ONNX embedding
@@ -322,7 +326,7 @@ export const embeddingsTools: MCPTool[] = [
 
   {
     name: 'embeddings_compare',
-    description: 'Compare similarity between two texts',
+    description: 'Compare similarity between two texts Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
     category: 'embeddings',
     inputSchema: {
       type: 'object',
@@ -356,6 +360,9 @@ export const embeddingsTools: MCPTool[] = [
       const text1 = input.text1 as string;
       const text2 = input.text2 as string;
       const metric = (input.metric as string) || 'cosine';
+
+      { const v = validateText(text1, 'text1'); if (!v.valid) return { success: false, error: v.error }; }
+      { const v = validateText(text2, 'text2'); if (!v.valid) return { success: false, error: v.error }; }
 
       // Generate real ONNX embeddings for both texts
       const [emb1, emb2] = await Promise.all([
@@ -409,7 +416,7 @@ export const embeddingsTools: MCPTool[] = [
 
   {
     name: 'embeddings_search',
-    description: 'Semantic search across stored embeddings',
+    description: 'Semantic search across stored embeddings Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
     category: 'embeddings',
     inputSchema: {
       type: 'object',
@@ -449,6 +456,9 @@ export const embeddingsTools: MCPTool[] = [
       const threshold = (input.threshold as number) || 0.5;
       const namespace = input.namespace as string;
 
+      { const v = validateText(query, 'query'); if (!v.valid) return { success: false, error: v.error }; }
+      if (namespace) { const v = validateIdentifier(namespace, 'namespace'); if (!v.valid) return { success: false, error: v.error }; }
+
       const startTime = performance.now();
 
       // Generate real ONNX embedding for query
@@ -461,7 +471,7 @@ export const embeddingsTools: MCPTool[] = [
           query,
           limit: topK,
           threshold,
-          namespace: namespace || 'default'
+          namespace: namespace || 'all'
         });
 
         const searchTime = (performance.now() - startTime).toFixed(2);
@@ -479,7 +489,7 @@ export const embeddingsTools: MCPTool[] = [
             model: config.model,
             topK,
             threshold,
-            namespace: namespace || 'default',
+            namespace: namespace || 'all',
             searchTime: `${searchTime}ms`,
             indexType: config.hyperbolic.enabled ? 'HNSW (hyperbolic)' : 'HNSW (euclidean)',
             resultCount: searchResult.results.length
@@ -496,7 +506,7 @@ export const embeddingsTools: MCPTool[] = [
             model: config.model,
             topK,
             threshold,
-            namespace: namespace || 'default',
+            namespace: namespace || 'all',
             searchTime: `${searchTime}ms`,
             indexType: config.hyperbolic.enabled ? 'HNSW (hyperbolic)' : 'HNSW (euclidean)',
           },
@@ -508,7 +518,7 @@ export const embeddingsTools: MCPTool[] = [
 
   {
     name: 'embeddings_neural',
-    description: 'Neural substrate operations (RuVector integration)',
+    description: 'Neural substrate operations (RuVector integration) Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
     category: 'embeddings',
     inputSchema: {
       type: 'object',
@@ -705,7 +715,7 @@ export const embeddingsTools: MCPTool[] = [
 
   {
     name: 'embeddings_hyperbolic',
-    description: 'Hyperbolic embedding operations (Poincaré ball)',
+    description: 'Hyperbolic embedding operations (Poincaré ball) Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
     category: 'embeddings',
     inputSchema: {
       type: 'object',
@@ -823,7 +833,7 @@ export const embeddingsTools: MCPTool[] = [
 
   {
     name: 'embeddings_status',
-    description: 'Get embeddings system status and configuration',
+    description: 'Get embeddings system status and configuration Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
     category: 'embeddings',
     inputSchema: {
       type: 'object',
@@ -839,6 +849,24 @@ export const embeddingsTools: MCPTool[] = [
         };
       }
 
+      // ADR-093 F5: distinguish "@ruvector/core installed" from "wired into
+      // the embedding pipeline". Previously this collapsed both into a
+      // single `ruvector: boolean` field, which gave callers no way to
+      // tell whether re-running embeddings_init would help (#1698 partial
+      // regression on the MCP boundary).
+      let ruvectorAvailable = false;
+      let ruvectorVersion: string | undefined;
+      try {
+        const mod = await import('@ruvector/core');
+        ruvectorAvailable = !!(mod as Record<string, unknown>);
+        try {
+          // Best-effort: many packages expose a `version` constant
+          ruvectorVersion = (mod as { version?: string }).version;
+        } catch { /* ignore */ }
+      } catch { /* not installed */ }
+
+      const ruvectorEnabled = config.neural.ruvector?.enabled ?? false;
+
       return {
         success: true,
         initialized: true,
@@ -849,7 +877,16 @@ export const embeddingsTools: MCPTool[] = [
           hyperbolic: config.hyperbolic,
           neural: {
             enabled: config.neural.enabled,
-            ruvector: config.neural.ruvector?.enabled ?? false,
+            // Backwards-compatible: keep the boolean view (truthy when wired).
+            ruvector: ruvectorEnabled,
+            // New shape — additive, non-breaking. Callers that need to
+            // distinguish "package is installed" from "feature wired in"
+            // read these instead of guessing from a single bool.
+            ruvectorStatus: {
+              available: ruvectorAvailable,
+              enabled: ruvectorEnabled,
+              version: ruvectorVersion,
+            },
           },
         },
         paths: {
@@ -858,12 +895,88 @@ export const embeddingsTools: MCPTool[] = [
         },
         initializedAt: config.initialized,
         capabilities: {
-          onnxModels: ['all-MiniLM-L6-v2', 'all-mpnet-base-v2'],
+          onnxModels: ['Xenova/all-MiniLM-L6-v2', 'Xenova/all-mpnet-base-v2'],
           geometries: ['euclidean', 'poincare'],
           normalizations: ['L2', 'L1', 'minmax', 'zscore'],
           features: ['semantic search', 'hyperbolic projection', 'neural substrate'],
         },
       };
+    },
+  },
+
+  // --- RaBitQ 1-bit quantized vector index ---
+
+  {
+    name: 'embeddings_rabitq_build',
+    description: 'Build RaBitQ 1-bit quantized index from stored embeddings (32× compression). Pre-filters candidates via Hamming scan before exact rerank. Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
+    category: 'embeddings',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        force: { type: 'boolean', description: 'Force rebuild even if index exists' },
+      },
+    },
+    handler: async (params: Record<string, unknown>) => {
+      const { buildRabitqIndex } = await import('../memory/rabitq-index.js');
+      return buildRabitqIndex({ force: params.force as boolean });
+    },
+  },
+
+  {
+    name: 'embeddings_rabitq_search',
+    description: 'Search via RaBitQ quantized index (fast Hamming scan). Returns candidate IDs for reranking. Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
+    category: 'embeddings',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query text' },
+        k: { type: 'number', description: 'Number of results (default: 10)' },
+        namespace: { type: 'string', description: 'Filter by namespace' },
+      },
+      required: ['query'],
+    },
+    handler: async (params: Record<string, unknown>) => {
+      const { validateText: vt } = await import('./validate-input.js');
+      const v = vt(params.query as string, 'query');
+      if (!v.valid) return { success: false, error: v.error };
+
+      const { searchRabitq } = await import('../memory/rabitq-index.js');
+      const { generateEmbedding } = await import('../memory/memory-initializer.js');
+
+      const queryEmb = await generateEmbedding(params.query as string);
+      const results = await searchRabitq(queryEmb.embedding, {
+        k: (params.k as number) || 10,
+        namespace: params.namespace as string,
+      });
+
+      if (!results) {
+        return { success: false, error: 'RaBitQ index not built. Call embeddings_rabitq_build first.' };
+      }
+
+      return {
+        success: true,
+        results: results.map(r => ({
+          id: r.id.substring(0, 12),
+          key: r.key,
+          namespace: r.namespace,
+          distance: Math.round(r.distance * 10000) / 10000,
+        })),
+        count: results.length,
+      };
+    },
+  },
+
+  {
+    name: 'embeddings_rabitq_status',
+    description: 'Get RaBitQ quantized index status — availability, vector count, compression ratio Use when text similarity matters beyond keyword match — native Grep finds exact strings, embeddings find meaning. Pair with memory_store / agentdb_pattern-search to land the vector against your knowledge base. For literal symbol search, native Grep is faster.',
+    category: 'embeddings',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+    handler: async () => {
+      const { getRabitqStatus } = await import('../memory/rabitq-index.js');
+      return { success: true, ...getRabitqStatus() };
     },
   },
 ];

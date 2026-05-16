@@ -18,14 +18,15 @@
  */
 
 import { EventEmitter } from 'events';
-import { spawn, ChildProcess } from 'child_process';
-import { createServer, Server } from 'http';
+import { spawn, ChildProcess, execFileSync } from 'child_process';
+import { createServer, Server, request as httpRequestFn } from 'http';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { trackRequest } from './mcp-tools/request-tracker.js';
 
 // ESM-compatible __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -308,6 +309,42 @@ export class MCPServerManager extends EventEmitter {
    * Handles stdin/stdout directly like V2 implementation
    */
   private async startStdioServer(): Promise<void> {
+    // ruflo#1910 — protect the JSON-RPC stdout from any stray
+    // console.log/info/debug emitted by lazily-loaded modules
+    // (@ruvector/router, @claude-flow/neural, transformers.js, ONNX,
+    // semantic-router init, etc.). Codex closes the MCP transport
+    // the moment it sees a non-JSON line on stdout, and one such
+    // line during a tool batch bricked the whole session.
+    //
+    // Strategy: replace console.log/info/debug with stderr writers
+    // for the rest of the process. JSON-RPC frames go out via the
+    // dedicated `writeFrame()` helper below (process.stdout.write
+    // with the original native binding, NOT console.log), so the
+    // hijack can't accidentally redirect protocol frames too.
+    process.env.MCP_STDIO_MODE = '1';
+    const originalLog = console.log;  // eslint-disable-line no-console
+    console.log = (...args: unknown[]) => process.stderr.write('[stdout→stderr] ' + args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') + '\n');
+    console.info = (...args: unknown[]) => process.stderr.write('[stdout→stderr] ' + args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') + '\n');
+    console.debug = (...args: unknown[]) => process.stderr.write('[stdout→stderr] ' + args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ') + '\n');
+
+    /** Send a single JSON-RPC frame to the real stdout. Use this instead
+     * of `console.log` so the hijack above can't redirect protocol frames. */
+    const writeFrame = (msg: unknown): void => {
+      process.stdout.write(JSON.stringify(msg) + '\n');
+    };
+    // Reference originalLog to keep the eslint-disable meaningful — also
+    // gives us an escape hatch if a test wants to verify it was replaced.
+    void originalLog;
+
+    // Catch fatal errors that would otherwise close the transport
+    // mid-batch with no JSON-RPC error returned to the client.
+    process.on('uncaughtException', (err) => {
+      process.stderr.write(`[mcp-stdio] uncaughtException: ${err.stack || err.message}\n`);
+    });
+    process.on('unhandledRejection', (reason) => {
+      process.stderr.write(`[mcp-stdio] unhandledRejection: ${reason instanceof Error ? reason.stack || reason.message : String(reason)}\n`);
+    });
+
     // Import the tool registry
     const { listMCPTools, callMCPTool, hasTool } = await import('./mcp-client.js');
 
@@ -318,6 +355,39 @@ export class MCPServerManager extends EventEmitter {
     console.error(
       `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Starting in stdio mode`
     );
+
+    // Auto-initialize memory database before tools are registered (#1524)
+    // This ensures memory_store and other memory tools work immediately
+    // without waiting for the first tool call to trigger lazy init.
+    try {
+      const { initializeMemoryDatabase, checkMemoryInitialization } = await import('./memory/memory-initializer.js');
+      const status = await checkMemoryInitialization();
+      if (!status.initialized) {
+        console.error(
+          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Auto-initializing memory database...`
+        );
+        const result = await initializeMemoryDatabase({ force: false, verbose: false });
+        if (result.success) {
+          console.error(
+            `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Memory database initialized at ${result.dbPath}`
+          );
+        } else if (result.error && !result.error.includes('already exists')) {
+          console.error(
+            `[${new Date().toISOString()}] WARN [claude-flow-mcp] (${sessionId}) Memory database init returned: ${result.error}`
+          );
+        }
+      } else {
+        console.error(
+          `[${new Date().toISOString()}] INFO [claude-flow-mcp] (${sessionId}) Memory database already initialized (v${status.version || 'unknown'})`
+        );
+      }
+    } catch (memInitError) {
+      // Graceful degradation: server continues even if memory init fails.
+      // Memory tools will attempt lazy init on first call via ensureInitialized().
+      console.error(
+        `[${new Date().toISOString()}] WARN [claude-flow-mcp] (${sessionId}) Memory auto-init failed (tools will retry on first call): ${memInitError instanceof Error ? memInitError.message : String(memInitError)}`
+      );
+    }
     console.error(JSON.stringify({
       arch: process.arch,
       mode: 'mcp-stdio',
@@ -330,7 +400,7 @@ export class MCPServerManager extends EventEmitter {
     }));
 
     // Send server initialization notification
-    console.log(JSON.stringify({
+    writeFrame({
       jsonrpc: '2.0',
       method: 'server.initialized',
       params: {
@@ -343,7 +413,7 @@ export class MCPServerManager extends EventEmitter {
           },
         },
       },
-    }));
+    });
 
     // Handle stdin messages (S-5: bounded buffer to prevent OOM)
     const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10MB
@@ -357,10 +427,10 @@ export class MCPServerManager extends EventEmitter {
           `[${new Date().toISOString()}] ERROR [claude-flow-mcp] Buffer exceeded ${MAX_BUFFER_SIZE} bytes, rejecting`
         );
         buffer = '';
-        console.log(JSON.stringify({
+        writeFrame({
           jsonrpc: '2.0',
           error: { code: -32600, message: 'Request too large' },
-        }));
+        });
         return;
       }
 
@@ -374,7 +444,7 @@ export class MCPServerManager extends EventEmitter {
             const message = JSON.parse(line);
             const response = await this.handleMCPMessage(message, sessionId);
             if (response) {
-              console.log(JSON.stringify(response));
+              writeFrame(response);
             }
           } catch (error) {
             console.error(
@@ -475,12 +545,14 @@ export class MCPServerManager extends EventEmitter {
 
           try {
             const result = await callMCPTool(toolName, toolParams, { sessionId });
+            trackRequest(toolName, true);
             return {
               jsonrpc: '2.0',
               id: message.id,
               result: { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] },
             };
           } catch (error) {
+            trackRequest(toolName, false);
             return {
               jsonrpc: '2.0',
               id: message.id,
@@ -653,7 +725,7 @@ export class MCPServerManager extends EventEmitter {
     }
     // Also clean up legacy PID file location from older versions
     try {
-      const legacyPath = path.join(process.cwd(), '.claude-flow', 'mcp-server.pid');
+      const legacyPath = path.join(process.env.CLAUDE_FLOW_CWD || process.cwd(), '.claude-flow', 'mcp-server.pid');
       if (legacyPath !== this.options.pidFile) {
         await fs.promises.unlink(legacyPath);
       }
@@ -675,12 +747,25 @@ export class MCPServerManager extends EventEmitter {
     }
 
     // Verify it's actually a node process (guards against PID reuse)
+    // DA-CRIT-3: Use execFileSync to prevent command injection via PID values
     try {
-      const { execSync } = require('child_process') as typeof import('child_process');
-      const cmdline = execSync(`cat /proc/${pid}/cmdline 2>/dev/null || ps -p ${pid} -o comm= 2>/dev/null`, {
-        encoding: 'utf8',
-        timeout: 1000,
-      }).trim();
+      const safePid = String(Math.floor(Math.abs(pid)));
+      let cmdline = '';
+      try {
+        // Try /proc on Linux
+        cmdline = fs.readFileSync(`/proc/${safePid}/cmdline`, 'utf8');
+      } catch {
+        // Fall back to ps on macOS/other
+        try {
+          cmdline = execFileSync('ps', ['-p', safePid, '-o', 'comm='], {
+            encoding: 'utf8',
+            timeout: 1000,
+          }).trim();
+        } catch {
+          // ps failed — fall through
+        }
+      }
+      if (!cmdline) return true; // Can't inspect, fall back to kill check
       // Must be a node process to be our MCP server
       return cmdline.includes('node') || cmdline.includes('claude-flow') || cmdline.includes('npx');
     } catch {
@@ -699,9 +784,8 @@ export class MCPServerManager extends EventEmitter {
   ): Promise<any> {
     return new Promise((resolve, reject) => {
       const urlObj = new URL(url);
-      const http = require('http');
 
-      const req = http.request(
+      const req = httpRequestFn(
         {
           hostname: urlObj.hostname,
           port: urlObj.port,
