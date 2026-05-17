@@ -9,7 +9,7 @@
  * - Sanitization transforms
  * - Reusable schemas
  *
- * @module v3/security/input-validator
+ * @module v3/@claude-flow/security/src/input-validator
  */
 
 import { z } from 'zod';

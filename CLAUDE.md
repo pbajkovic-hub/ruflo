@@ -4,6 +4,49 @@
 > 6,000+ commits, 314 MCP tools, 16 agent roles + custom types, 19 AgentDB controllers, 21 native plugins.
 > Packages: `@claude-flow/cli@3.6.10`, `claude-flow@3.6.10`, `ruflo@3.6.10`
 
+## Repository Layout (Read This First)
+
+This is a **non-workspace monorepo**. The root `claude-flow` package is a thin umbrella — all real source lives under `v3/@claude-flow/` (24 packages, each independently built/installed/tested).
+
+- `bin/cli.js` is a proxy that imports `v3/@claude-flow/cli/bin/cli.js` — the actual CLI.
+- CLI command handlers: `v3/@claude-flow/cli/src/commands/*.ts` (~40 files, one per command).
+- Root `tsc` compiles `v3/**/*.ts` → `./dist`; the publishable build is the CLI package's own `tsc`.
+- Three packages publish together (see "Publishing to npm"): `@claude-flow/cli` → `claude-flow` (umbrella) → `ruflo` (alias). `ruflo` source is in `/ruflo/`.
+- Key packages are mapped in the "Key Packages" table below; deeper architecture is in `v3/README.md` and `v3/docs/adr/`.
+- There are nested `CLAUDE.md` files at `v3/` and `v3/@claude-flow/cli/` — they cover the same swarm-orchestration behavior, scoped narrower.
+
+## Building, Testing & Linting
+
+Run package-level commands from inside the package dir — there are **no npm workspaces**, so root commands do not cascade.
+
+```bash
+# Build the CLI (the build that matters for publishing/running)
+cd v3/@claude-flow/cli && npm install && npm run build   # tsc
+
+# Build everything tsc can see, from the repo root
+npm run build                                            # tsc over v3/**/*.ts -> ./dist
+
+# Test the CLI package (real test suite + config)
+cd v3/@claude-flow/cli && npm test                       # vitest run, includes __tests__/**/*.test.ts
+
+# Run a single test file or test by name
+cd v3/@claude-flow/cli && npx vitest run src/path/to/file.test.ts
+cd v3/@claude-flow/cli && npx vitest run -t "test name substring"
+
+# Repo-root test runner (no root vitest.config — vitest defaults apply)
+npm test                                                 # vitest (watch); npm run test:ui for UI
+npm run test:security                                    # delegates to @claude-flow/security package tests
+
+# Dev watch (root entry, rarely used vs. CLI package)
+npm run dev                                              # tsx watch src/index.ts
+```
+
+**Gotchas — verify, don't trust the docs:**
+- `npm run lint` (root) is a **silent no-op**: it runs `cd v3/@claude-flow/cli && npm run lint || true`, and the CLI package has **no `lint` script**. There is no working lint command in this repo despite ESLint being a devDependency.
+- `v3/README.md` instructs `pnpm install` / `pnpm test:integration` / `pnpm bench` — these are **stale**. The package scripts use `npm` and those pnpm script names don't exist. Use the commands above.
+- The real vitest config is `v3/@claude-flow/cli/vitest.config.ts` (externalizes optional native deps like `agentdb`, `@ruvector/*`, `agentic-flow`). Root `npm test` has no config and uses vitest defaults.
+- Requires Node.js >=20. Optional native/WASM deps (`agentdb`, `@ruvector/*`, `agentic-flow`) are `optionalDependencies` — code degrades gracefully (e.g. SONA disabled) when absent; don't assume they're installed.
+
 ## Behavioral Rules (Always Enforced)
 
 - Do what has been asked; nothing more, nothing less

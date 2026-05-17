@@ -3,7 +3,7 @@
  *
  * Contains security logic for validation, policy enforcement, and threat detection.
  *
- * @module v3/security/domain/services
+ * @module v3/@claude-flow/security/src/domain/services
  */
 
 import { SecurityContext, PermissionLevel } from '../entities/security-context.js';

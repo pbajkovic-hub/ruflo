@@ -1,7 +1,7 @@
 /**
  * Security Application Layer - Public Exports
  *
- * @module v3/security/application
+ * @module v3/@claude-flow/security/src/application
  */
 
 export {

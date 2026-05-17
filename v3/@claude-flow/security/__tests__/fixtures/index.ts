@@ -3,7 +3,7 @@
  *
  * Re-exports all test fixtures for the security module.
  *
- * @module v3/security/__tests__/fixtures
+ * @module v3/@claude-flow/security/__tests__/fixtures
  */
 
 export {

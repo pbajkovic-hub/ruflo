@@ -3,7 +3,7 @@
  *
  * Represents security context for operations with validation and policy enforcement.
  *
- * @module v3/security/domain/entities
+ * @module v3/@claude-flow/security/src/domain/entities
  */
 
 import { randomUUID } from 'crypto';

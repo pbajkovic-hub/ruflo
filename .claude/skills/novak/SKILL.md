@@ -158,6 +158,7 @@ variable from 5a.
 
 ```powershell
 $desktop = [Environment]::GetFolderPath('Desktop')
+if ([string]::IsNullOrWhiteSpace($desktop)) { $desktop = Join-Path $env:USERPROFILE 'Desktop' }
 $dir     = Join-Path $desktop "novak-briefs\<slug>-$(Get-Date -Format 'yyyy-MM-dd')"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 Write-Output "Created: $dir"
@@ -188,6 +189,7 @@ can decide them with the programmer.
 ---
 
 ## Quick reference
+
 
 - Trigger: user types `/novak` (or asks to brief a developer / hand off a product idea).
 - Flow: advise plan mode → contract → frame (type + new/existing) → 18-topic deep-dive →

@@ -3,7 +3,7 @@
  *
  * Provides predefined security configurations for testing different scenarios.
  *
- * @module v3/security/__tests__/fixtures/configurations
+ * @module v3/@claude-flow/security/__tests__/fixtures/configurations
  */
 
 /**

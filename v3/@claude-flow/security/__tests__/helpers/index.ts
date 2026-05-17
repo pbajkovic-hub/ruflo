@@ -3,7 +3,7 @@
  *
  * Re-exports all testing utilities for the security module.
  *
- * @module v3/security/__tests__/helpers
+ * @module v3/@claude-flow/security/__tests__/helpers
  */
 
 export {

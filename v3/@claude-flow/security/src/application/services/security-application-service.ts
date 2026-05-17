@@ -3,7 +3,7 @@
  *
  * Orchestrates security operations and provides simplified interface.
  *
- * @module v3/security/application/services
+ * @module v3/@claude-flow/security/src/application/services
  */
 
 import { SecurityContext, PermissionLevel } from '../../domain/entities/security-context.js';

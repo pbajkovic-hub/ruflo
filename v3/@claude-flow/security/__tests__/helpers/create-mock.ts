@@ -4,7 +4,7 @@
  * Provides type-safe mock creation utilities for testing security components.
  * Uses vitest's mocking capabilities with full TypeScript support.
  *
- * @module v3/security/__tests__/helpers/create-mock
+ * @module v3/@claude-flow/security/__tests__/helpers/create-mock
  */
 
 import { vi, type MockInstance } from 'vitest';

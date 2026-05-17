@@ -10,7 +10,7 @@
  * - No hardcoded defaults stored in code
  * - Secure credential storage recommendations
  *
- * @module v3/security/credential-generator
+ * @module v3/@claude-flow/security/src/credential-generator
  */
 
 import { randomBytes, randomUUID } from 'crypto';

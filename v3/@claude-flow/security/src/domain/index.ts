@@ -1,7 +1,7 @@
 /**
  * Security Domain Layer - Public Exports
  *
- * @module v3/security/domain
+ * @module v3/@claude-flow/security/src/domain
  */
 
 export {

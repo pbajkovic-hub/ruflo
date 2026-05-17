@@ -44,7 +44,7 @@
     "build:ts": "cd v3/@claude-flow/cli && npm run build || true",
     "test": "vitest",
     "test:ui": "vitest --ui",
-    "test:security": "vitest run v3/__tests__/security/",
+    "test:security": "cd v3/@claude-flow/security && npm test",
     "lint": "cd v3/@claude-flow/cli && npm run lint || true",
     "security:audit": "npm audit --audit-level high",
     "security:fix": "npm audit fix",

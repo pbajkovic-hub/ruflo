@@ -10,7 +10,7 @@
  * - Timing-safe comparison
  * - Minimum password length enforcement
  *
- * @module v3/security/password-hasher
+ * @module v3/@claude-flow/security/src/password-hasher
  */
 
 // #1608 — switched from `bcrypt` to `bcryptjs` to drop the

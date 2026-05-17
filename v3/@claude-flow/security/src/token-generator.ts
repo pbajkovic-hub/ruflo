@@ -14,7 +14,7 @@
  * - Timing-safe comparison
  * - Token expiration handling
  *
- * @module v3/security/token-generator
+ * @module v3/@claude-flow/security/src/token-generator
  */
 
 import { randomBytes, createHmac, timingSafeEqual } from 'crypto';

@@ -13,7 +13,7 @@
  * - Symlink resolution (optional)
  * - Traversal pattern detection
  *
- * @module v3/security/path-validator
+ * @module v3/@claude-flow/security/src/path-validator
  */
 
 import * as path from 'path';

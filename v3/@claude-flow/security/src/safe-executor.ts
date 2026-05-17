@@ -14,7 +14,7 @@
  * - Timeout controls
  * - Resource limits
  *
- * @module v3/security/safe-executor
+ * @module v3/@claude-flow/security/src/safe-executor
  */
 
 import { execFile, spawn, ChildProcess } from 'child_process';
