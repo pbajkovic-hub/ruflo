@@ -109,10 +109,17 @@ list out loud.
 
 ## Step 3 — Completeness gate (before any generation)
 
-Present a checklist of all 18 topics with a status each: ✅ solid · ⚠️ assumed · ❌
-unanswered. List every open question. Then ask the user to either fill the gaps or
-explicitly approve generating with the assumptions as recorded. **Do not proceed without
-this explicit approval.**
+Present a checklist of all 18 topics with a status each: ✅ solid · ⚠️ assumed ·
+➖ N/A · ❌ unanswered. Conditional topics resolve to **➖ N/A** based on the Step 1
+project-type branch — topic 6 *Web-shop specifics* is N/A for a pure app; topic 7
+*App specifics* is N/A for a pure web shop. List every open question. Then ask the user
+to either fill the gaps or explicitly approve generating with the assumptions as
+recorded. **Do not proceed without this explicit approval.**
+
+Once the user approves, call **`ExitPlanMode`** before doing anything in Steps 4–5.
+Those steps use the Write tool and PowerShell, which **cannot run while plan mode is
+active** — staying in plan mode here would stall the handoff at the finish line. (If the
+user never entered plan mode, skip this and proceed directly.)
 
 ---
 
@@ -142,24 +149,37 @@ who has never spoken to the user. Use the captured answers; mark anything assume
 ## Step 5 — Zip to the Desktop (Windows / PowerShell)
 
 Resolve the **real** Desktop (handles OneDrive redirection) — never hardcode a path. Use a
-kebab-case project slug and today's date. Run this PowerShell, substituting `<slug>`:
+kebab-case project slug and today's date. Run this in **three ordered steps** — do NOT run
+it as one block, or you will zip an empty folder. Each shell invocation is a fresh process,
+so 5c deliberately **recomputes** the path from the same derivation rather than reusing a
+variable from 5a.
+
+**5a — Create the target folder** (substitute `<slug>`, kebab-case, e.g. `acme-web-shop`):
 
 ```powershell
 $desktop = [Environment]::GetFolderPath('Desktop')
-$slug    = '<slug>'                         # kebab-case project name, e.g. acme-web-shop
-$date    = Get-Date -Format 'yyyy-MM-dd'
-$dir     = Join-Path $desktop "novak-briefs\$slug-$date"
+$dir     = Join-Path $desktop "novak-briefs\<slug>-$(Get-Date -Format 'yyyy-MM-dd')"
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
-# (write all 00..11 .md files into $dir here)
-$zip = "$dir.zip"
+Write-Output "Created: $dir"
+```
+
+**5b — Write all 12 files** (`00-README-handoff.md` … `11-decisions-for-the-engineer.md`)
+into that folder using the **Write tool** with resolved absolute paths. Do not continue to
+5c until every one of the 12 files has been written.
+
+**5c — Zip the folder** (only after all 12 files exist; same `<slug>` substitution):
+
+```powershell
+$desktop = [Environment]::GetFolderPath('Desktop')
+$dir     = Join-Path $desktop "novak-briefs\<slug>-$(Get-Date -Format 'yyyy-MM-dd')"
+$zip     = "$dir.zip"
 if (Test-Path $zip) { Remove-Item $zip }
 Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip
 Write-Output "Folder: $dir"
 Write-Output "ZIP:    $zip"
 ```
 
-Write the 12 files into `$dir` (use the Write tool with the resolved absolute paths), then
-run the `Compress-Archive` step. Keep the unzipped folder for the user's review.
+Keep the unzipped folder for the user's review.
 
 **Final message to the user:** report both absolute paths (folder + ZIP), a one-line
 summary of what's inside, and a reminder of any items still marked OPEN QUESTION so they
@@ -171,5 +191,5 @@ can decide them with the programmer.
 
 - Trigger: user types `/novak` (or asks to brief a developer / hand off a product idea).
 - Flow: advise plan mode → contract → frame (type + new/existing) → 18-topic deep-dive →
-  completeness gate → approve → 12 docs → ZIP to Desktop.
+  completeness gate → approve → **exit plan mode** → 12 docs → ZIP to Desktop.
 - Never: tech stack talk, silent gap-filling, ZIP before approval, non-English docs.
