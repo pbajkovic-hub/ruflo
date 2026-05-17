@@ -1,0 +1,55 @@
+name: PajaTraining
+options:
+  bundleIdPrefix: com.paja
+  deploymentTarget:
+    iOS: "17.0"
+  minimumXcodeVersion: "15.0"
+
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: "6.0.0"
+
+targets:
+  PajaTraining:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources
+    resources:
+      - path: Sources/Data/DB/schema_v1.sql
+    dependencies:
+      - package: GRDB
+    entitlements:
+      path: PajaTraining.entitlements
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Paja Training
+        UILaunchScreen:
+          UIColorName: ""
+        NSHealthShareUsageDescription: "Paja Training reads Apple Health data (HRV, resting heart rate, sleep, workouts, body composition) to adapt your strength program to your daily recovery."
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.paja.pajatraining.oura-sync
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiresFullScreen: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.paja.pajatraining
+        SWIFT_VERSION: "5.10"
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: YES
+
+  PajaTrainingTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: PajaTraining
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.paja.pajatrainingtests
